@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sinhala → English Voice Studio</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <p class="eyebrow">Narration production</p>
+    <h1>Sinhala → English Voice Studio</h1>
+    <p>Transcribe, translate, adapt, review, and generate English narration one segment at a time.</p>
+  </header>
+
+  <main>
+    <section class="card" id="create-card">
+      <h2>New project</h2>
+      <div class="grid">
+        <label>Title<input id="title" placeholder="Episode or video title"></label>
+        <label>Topic<input id="topic" placeholder="Documentary, research, story…"></label>
+      </div>
+      <label>Glossary <span>one item per line: Sinhala/name = preferred English</span>
+        <textarea id="glossary" rows="4" placeholder="කොළඹ = Colombo&#10;OpenAI = OpenAI"></textarea>
+      </label>
+      <label>Audio file<input id="audio" type="file" accept="audio/*,video/mp4,video/webm"></label>
+      <div class="actions">
+        <button id="create">Create and upload</button>
+        <span id="create-status" class="muted"></span>
+      </div>
+    </section>
+
+    <section class="card hidden" id="workspace">
+      <div class="section-head">
+        <div><p class="eyebrow">Current project</p><h2 id="project-title"></h2></div>
+        <span id="project-status" class="pill"></span>
+      </div>
+      <div class="actions">
+        <label class="inline">Voice<input id="voice" value="onyx"></label>
+        <button id="process">Start processing</button>
+        <button id="assemble" class="secondary">Assemble reviewed audio</button>
+      </div>
+      <div id="progress" class="progress-wrap hidden">
+        <div class="progress"><div id="progress-bar"></div></div>
+        <p id="progress-text" class="muted"></p>
+      </div>
+      <div id="speaking-profile" class="profile hidden"></div>
+      <div id="exports" class="exports"></div>
+      <div id="segments"></div>
+    </section>
+
+    <section class="card">
+      <h2>Recent projects</h2>
+      <div id="projects" class="project-list"></div>
+    </section>
+  </main>
+
+  <footer>English audio is AI-generated. Review meaning, pronunciation, and pacing before publishing.</footer>
+  <script src="/static/app.js"></script>
+</body>
+</html>

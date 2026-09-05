@@ -1,0 +1,139 @@
+from __future__ import annotations
+
+import json
+import re
+import subprocess
+from dataclasses import dataclass
+from pathlib import Path
+
+
+class AudioError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class AudioInfo:
+    duration_ms: int
+    codec: str
+    sample_rate: int
+    channels: int
+
+
+class AudioService:
+    def __init__(self, ffmpeg: str = "ffmpeg", ffprobe: str = "ffprobe"):
+        self.ffmpeg = ffmpeg
+        self.ffprobe = ffprobe
+
+    def _run(self, command: list[str]) -> subprocess.CompletedProcess[str]:
+        try:
+            return subprocess.run(command, check=True, capture_output=True, text=True)
+        except FileNotFoundError as exc:
+            raise AudioError(f"Required program is missing: {command[0]}") from exc
+        except subprocess.CalledProcessError as exc:
+            detail = (exc.stderr or exc.stdout or "Audio processing failed").strip()
+            raise AudioError(detail[-1200:]) from exc
+
+    def probe(self, path: Path) -> AudioInfo:
+        result = self._run([
+            self.ffprobe,
+            "-v", "error",
+            "-show_entries", "format=duration:stream=codec_name,sample_rate,channels,codec_type",
+            "-of", "json",
+            str(path),
+        ])
+        payload = json.loads(result.stdout)
+        streams = [s for s in payload.get("streams", []) if s.get("codec_type") == "audio"]
+        if not streams:
+            raise AudioError("No readable audio stream was found")
+        stream = streams[0]
+        duration = float(payload.get("format", {}).get("duration") or 0)
+        if duration <= 0:
+            raise AudioError("Audio duration could not be determined")
+        return AudioInfo(
+            duration_ms=round(duration * 1000),
+            codec=stream.get("codec_name", "unknown"),
+            sample_rate=int(stream.get("sample_rate") or 0),
+            channels=int(stream.get("channels") or 0),
+        )
+
+    def normalize(self, source: Path, destination: Path) -> AudioInfo:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        self._run([
+            self.ffmpeg, "-y", "-v", "error", "-i", str(source),
+            "-vn", "-ac", "1", "-ar", "24000", "-sample_fmt", "s16",
+            "-af", "loudnorm=I=-16:TP=-1.5:LRA=11", str(destination),
+        ])
+        return self.probe(destination)
+
+    def silence_boundaries(self, source: Path) -> list[int]:
+        result = subprocess.run([
+            self.ffmpeg, "-hide_banner", "-nostats", "-i", str(source),
+            "-af", "silencedetect=noise=-36dB:d=0.45", "-f", "null", "-",
+        ], capture_output=True, text=True)
+        if result.returncode != 0:
+            raise AudioError((result.stderr or "Silence detection failed")[-1200:])
+        starts = [float(x) for x in re.findall(r"silence_start:\s*([0-9.]+)", result.stderr)]
+        ends = [float(x) for x in re.findall(r"silence_end:\s*([0-9.]+)", result.stderr)]
+        return [round(((start + end) / 2) * 1000) for start, end in zip(starts, ends)]
+
+    @staticmethod
+    def plan_segments(
+        duration_ms: int,
+        boundaries_ms: list[int],
+        minimum_ms: int = 20_000,
+        target_ms: int = 45_000,
+        maximum_ms: int = 60_000,
+    ) -> list[tuple[int, int]]:
+        if duration_ms <= maximum_ms:
+            return [(0, duration_ms)]
+        boundaries = sorted({b for b in boundaries_ms if 0 < b < duration_ms})
+        segments: list[tuple[int, int]] = []
+        start = 0
+        while duration_ms - start > maximum_ms:
+            candidates = [b for b in boundaries if start + minimum_ms <= b <= start + maximum_ms]
+            end = min(candidates, key=lambda b: abs(b - (start + target_ms))) if candidates else start + target_ms
+            segments.append((start, end))
+            start = end
+        if duration_ms - start < minimum_ms and segments:
+            previous_start, _ = segments.pop()
+            segments.append((previous_start, duration_ms))
+        else:
+            segments.append((start, duration_ms))
+        return segments
+
+    def split(self, source: Path, destination_dir: Path) -> list[tuple[int, int, Path]]:
+        info = self.probe(source)
+        plan = self.plan_segments(info.duration_ms, self.silence_boundaries(source))
+        destination_dir.mkdir(parents=True, exist_ok=True)
+        created: list[tuple[int, int, Path]] = []
+        for index, (start_ms, end_ms) in enumerate(plan, start=1):
+            output = destination_dir / f"{index:04d}_source.wav"
+            extraction_start = max(0, start_ms - (200 if start_ms else 0))
+            extraction_end = min(info.duration_ms, end_ms + (200 if end_ms < info.duration_ms else 0))
+            self._run([
+                self.ffmpeg, "-y", "-v", "error",
+                "-ss", f"{extraction_start / 1000:.3f}",
+                "-to", f"{extraction_end / 1000:.3f}",
+                "-i", str(source), "-ac", "1", "-ar", "24000", str(output),
+            ])
+            created.append((start_ms, end_ms, output))
+        return created
+
+    def assemble(self, segment_paths: list[Path], wav_path: Path, mp3_path: Path) -> None:
+        if not segment_paths:
+            raise AudioError("No generated segments are available for assembly")
+        wav_path.parent.mkdir(parents=True, exist_ok=True)
+        inputs: list[str] = []
+        labels: list[str] = []
+        for index, path in enumerate(segment_paths):
+            inputs.extend(["-i", str(path)])
+            labels.append(f"[{index}:a]")
+        self._run([
+            self.ffmpeg, "-y", "-v", "error", *inputs,
+            "-filter_complex", f"{''.join(labels)}concat=n={len(segment_paths)}:v=0:a=1,loudnorm=I=-16:TP=-1.5:LRA=11[out]",
+            "-map", "[out]", "-ar", "24000", str(wav_path),
+        ])
+        self._run([
+            self.ffmpeg, "-y", "-v", "error", "-i", str(wav_path),
+            "-codec:a", "libmp3lame", "-b:a", "192k", str(mp3_path),
+        ])
