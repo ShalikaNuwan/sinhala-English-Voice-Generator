@@ -33,6 +33,8 @@ UNPUNCTUATED_MAX_MS = 200
 EDGE_SILENCE_MS = 60
 SILENCE_DB = -40
 SILENCE_MIN_S = 0.08
+# A word that starts this close before a silence and runs past it is the next word starting early.
+EARLY_START_S = 0.15
 # Without word timestamps only clear pauses are matched, in order, to script breaks.
 FALLBACK_MIN_PAUSE_S = 0.25
 # A pause may exceed the longest band by this much before QA complains.
@@ -159,14 +161,20 @@ def classify(
         # Transcriber timestamps drift into the silence from both sides: the word before a pause may
         # be stretched past its start, and the word after may begin early. The word before a pause is
         # therefore the last one that starts before the silence and does not run past its end.
-        started_before = [index for index, item in enumerate(spoken) if float(item.get("start") or 0) < start]
-        preceding = [index for index in started_before if float(spoken[index].get("end") or 0) <= end + 0.05]
+        candidates = [index for index, item in enumerate(spoken) if float(item.get("start") or 0) < start]
         cls = "unknown"
-        # If the nearest word spans the whole pause, an earlier word says nothing about this pause.
-        if preceding and preceding[-1] == started_before[-1]:
-            token_index = mapping.get(preceding[-1])
-            if token_index is not None:
-                cls = tokens[token_index][1]
+        while candidates:
+            index = candidates[-1]
+            word_start, word_end = float(spoken[index].get("start") or 0), float(spoken[index].get("end") or 0)
+            if word_end <= end + 0.05:
+                token_index = mapping.get(index)
+                if token_index is not None:
+                    cls = tokens[token_index][1]
+                break
+            if start - word_start < EARLY_START_S:
+                candidates.pop()  # the next word, started early; look at the one before it
+                continue
+            break  # a word that began well before the silence and runs past it swallows the pause
         result.append((start, end, cls))
     return result
 

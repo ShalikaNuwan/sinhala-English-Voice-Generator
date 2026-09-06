@@ -275,8 +275,9 @@ def test_classify_survives_timestamp_drift_on_both_sides_of_a_pause():
 
 def test_a_pause_spanned_by_its_nearest_word_is_unknown_not_attributed_earlier():
     tokens = pauses.script_tokens("First part. Second part.")
-    heard = spoken(("First", 0.0, 0.25), ("part", 0.25, 0.5), ("Second", 0.6, 0.9), ("part", 0.9, 1.2))
+    # "part" began 250 ms before the silence and runs past it: the pause is inside the word.
+    heard = spoken(("First", 0.0, 0.25), ("part", 0.25, 0.9), ("Second", 1.0, 1.3), ("part", 1.3, 1.6))
 
-    classified = pauses.classify([(0.30, 0.42)], heard, pauses.align(tokens, heard), tokens)
+    classified = pauses.classify([(0.5, 0.62)], heard, pauses.align(tokens, heard), tokens)
 
-    assert classified == [(0.30, 0.42, "unknown")]
+    assert classified == [(0.5, 0.62, "unknown")]
