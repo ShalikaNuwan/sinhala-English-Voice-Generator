@@ -198,7 +198,7 @@ def test_rebuild_sets_every_gap_to_its_target_and_leaves_speech_alone(tmp_path):
 
 
 def test_profile_and_issues(tmp_path):
-    path = bursts(tmp_path / "in.wav", [(1.0, 0.3), (1.0, 0.5), (1.0, 2.2), (1.0, 0.05)])
+    path = bursts(tmp_path / "in.wav", [(1.0, 0.35), (1.0, 0.5), (1.0, 2.2), (1.0, 0.05)])
 
     profile = pauses.pause_profile(path)
 
