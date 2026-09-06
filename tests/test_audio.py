@@ -108,3 +108,21 @@ def test_assembly_accepts_an_empty_gap_list_for_a_single_segment(tmp_path):
 
     assert audio.probe(wav).channels == 1
     assert 900 <= audio.probe(wav).duration_ms <= 1100
+
+
+def test_assembly_joins_a_legacy_mp3_segment_with_a_wav_segment(tmp_path):
+    audio = AudioService()
+    wav_part = tone(tmp_path / "0.wav", 1.0)
+    mp3_part = tmp_path / "1.mp3"
+    subprocess.run(
+        ["ffmpeg", "-y", "-v", "error", "-i", str(wav_part), "-codec:a", "libmp3lame", "-b:a", "128k", str(mp3_part)],
+        check=True,
+    )
+    wav = tmp_path / "out" / "final.wav"
+
+    audio.assemble([wav_part, mp3_part], wav, tmp_path / "out" / "final.mp3", gaps_ms=[600])
+
+    info = audio.probe(wav)
+    assert info.channels == 1 and info.sample_rate == 24000
+    assert 2450 <= info.duration_ms <= 2750
+    assert mean_volume_db(wav, 1.05, 1.55) < -60

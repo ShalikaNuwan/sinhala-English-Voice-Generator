@@ -323,3 +323,27 @@ def test_jobs_created_before_speed_existed_fall_back_to_the_configured_speed(tmp
     pipeline.process_job(job_id)
 
     assert ai.synthesis_calls[0]["speed"] == pipeline.config.tts_speed
+
+
+def test_assembly_caps_gaps_at_the_source_narrators_longest_pause(tmp_path):
+    ai = ProfilingFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai, seconds=65)
+    job_id = start_job(db, project_id)
+    pipeline.process_job(job_id)
+    # A pure-tone source measures no pauses; give the project a narrator whose longest pause is 500 ms.
+    profile = db.one("SELECT speaking_profile_json FROM projects WHERE id=?", (project_id,))["speaking_profile"]
+    profile["measured"]["longest_pause_ms"] = 500
+    db.execute("UPDATE projects SET speaking_profile_json=? WHERE id=?", (json.dumps(profile), project_id))
+    captured = {}
+    real_assemble = pipeline.audio.assemble
+
+    def spy(paths, wav, mp3, gaps_ms=None):
+        captured["gaps"] = gaps_ms
+        real_assemble(paths, wav, mp3, gaps_ms)
+
+    pipeline.audio.assemble = spy
+
+    pipeline.assemble_project(project_id, job_id)
+
+    # The fake adaptation asks for 800 ms, but the narrator never pauses longer than 500 ms.
+    assert captured["gaps"] == [500]

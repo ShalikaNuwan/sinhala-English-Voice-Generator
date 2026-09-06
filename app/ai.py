@@ -115,8 +115,8 @@ class AIClient:
                         "phrases copied from narration_text character for character, never a paraphrase, never a phrase "
                         "that is not in the script); and pause_before_ms and pause_after_ms (silence in milliseconds; "
                         "your number is added to the neighbouring passage's request, and anything under 300 is treated "
-                        "as 300, so leave both at 0 unless this passage really needs a longer pause than the narrator's "
-                        "usual gap)."
+                        "as 300 and nothing exceeds the narrator's longest measured pause, so leave both at 0 unless this "
+                        "passage really needs a longer pause than the narrator's usual gap)."
                     ),
                 },
                 {

@@ -72,7 +72,7 @@ For the first real evaluation, use a 2–5 minute representative recording with 
 
 - `POST /api/projects`
 - `POST /api/projects/{id}/upload`
-- `POST /api/projects/{id}/process`  (optional `voice`, `audio_model`, and per-stage model overrides)
+- `POST /api/projects/{id}/process`  (optional `voice`, `speed`, `audio_model`, and per-stage model overrides)
 - `GET /api/jobs/{id}`
 - `GET /api/jobs/{id}/segments`
 - `PATCH /api/segments/{id}/transcript`
@@ -89,7 +89,9 @@ Interactive API documentation is available at `/docs`.
 pytest
 ```
 
-The tests cover segmentation behavior and a real upload/validation lifecycle using a generated WAV file. They do not make paid API calls.
+The tests cover segmentation, the voice-direction brief, gap and speed rules, silence insertion with real
+FFmpeg, continuity through processing and regeneration, and a real upload/validation lifecycle using a
+generated WAV file. They do not make paid API calls.
 
 ## Speaking-pattern matching
 
@@ -125,11 +127,13 @@ Every TTS call is directed with one brief, built in `app/direction.py` from four
 
 Pace is driven through the brief. `TTS_SPEED` (or `speed` on the process request) is passed to the
 API and defaults to `1.0`. A request value outside 0.25–4.0 is rejected; an environment value outside
-that range is clamped.
+that range is clamped. On `gpt-4o-mini-tts` the setting is honoured but gentle: 0.92 lengthened the test
+segments by two to three percent, and the audio-model judge preferred 1.0.
 
 At assembly, the gap between two segments is the adaptation's `pause_after_ms` plus the next
 `pause_before_ms`; when both are zero it falls back to the source narrator's mean pause, and it is
-clamped between 300 ms and the source narrator's longest measured pause.
+clamped between 300 ms and the source narrator's longest measured pause. Without a speaking profile the
+fallback is 600 ms and the ceiling 2500 ms.
 
 Segments are generated as WAV so the final mix is only encoded once. WAV segment files are roughly
 ten times larger than the MP3 segments earlier versions produced.
