@@ -114,14 +114,43 @@ class AudioService:
         ])
         return self.probe(destination)
 
+    def _loudness(self, source: Path, start_ms: int, end_ms: int) -> dict:
+        """Measure a cut so loudness can be applied as a static gain; single-pass loudnorm is a no-op under 3 s."""
+        result = subprocess.run([
+            self.ffmpeg, "-hide_banner", "-nostats",
+            "-ss", f"{start_ms / 1000:.3f}", "-to", f"{end_ms / 1000:.3f}", "-i", str(source),
+            "-af", "loudnorm=I=-16:TP=-1.5:LRA=11:print_format=json", "-f", "null", "-",
+        ], capture_output=True, text=True)
+        match = re.search(r"\{[^{}]*\"input_i\"[^{}]*\}", result.stderr, re.S)
+        if result.returncode != 0 or not match:
+            raise AudioError((result.stderr or "Loudness measurement failed")[-1200:])
+        return json.loads(match.group(0))
+
     def extract_levelled(self, source: Path, start_ms: int, end_ms: int, destination: Path) -> AudioInfo:
-        """Cut a recording out of the source, exactly, and align its loudness with the narration target."""
+        """Cut a recording out of the source, exactly, align its loudness with the narration target, and
+        fade 5 ms at each end so the splice never clicks.
+
+        loudnorm's own gain application - single-pass, and even its "linear" second pass fed the
+        measured stats - needs several seconds of lookahead before it reaches the target, so on a short
+        evidence clip (1-3 s) it barely moves the level at all. The gain is instead computed by hand from
+        the measurement and applied as a plain static `volume` filter, which has no such minimum duration.
+        """
+        measured = self._loudness(source, start_ms, end_ms)
+        length_s = (end_ms - start_ms) / 1000
+        filters = []
+        input_i = float(measured.get("input_i", "-inf"))
+        if input_i > -70:  # leave silence alone
+            input_tp = float(measured["input_tp"])
+            gain_db = min(-16 - input_i, -1.5 - input_tp)
+            filters.append(f"volume={gain_db:.2f}dB")
+        filters.append("afade=t=in:st=0:d=0.005")
+        filters.append(f"afade=t=out:st={max(0.0, length_s - 0.005):.3f}:d=0.005")
         destination.parent.mkdir(parents=True, exist_ok=True)
         self._run([
             self.ffmpeg, "-y", "-v", "error",
             "-ss", f"{start_ms / 1000:.3f}", "-to", f"{end_ms / 1000:.3f}",
             "-i", str(source), "-ac", "1", "-ar", "24000",
-            "-af", "loudnorm=I=-16:TP=-1.5:LRA=11", str(destination),
+            "-af", ",".join(filters), str(destination),
         ])
         return self.probe(destination)
 

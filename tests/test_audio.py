@@ -151,17 +151,33 @@ def test_extract_does_not_pad_past_the_edges(tmp_path):
     assert 950 <= exact.duration_ms <= 1050
 
 
-def test_extract_levelled_cuts_exactly_and_normalises_loudness(tmp_path):
+@pytest.mark.parametrize("clip_ms", [1500, 2200, 3000, 5000])
+def test_extract_levelled_normalises_loudness_regardless_of_length(tmp_path, clip_ms):
     audio = AudioService()
     source = tmp_path / "quiet.wav"
     subprocess.run(
-        ["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=4",
+        ["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=8",
          "-af", "volume=-30dB", "-ar", "24000", "-ac", "1", str(source)],
         check=True,
     )
 
-    info = audio.extract_levelled(source, 500, 3500, tmp_path / "out" / "clip.wav")
+    info = audio.extract_levelled(source, 500, 500 + clip_ms, tmp_path / "out" / f"clip_{clip_ms}.wav")
 
     assert info.channels == 1 and info.sample_rate == 24000
-    assert 2900 <= info.duration_ms <= 3100
-    assert mean_volume_db(tmp_path / "out" / "clip.wav", 0.5, 2.5) > -25  # lifted from about -33 dB
+    assert clip_ms - 100 <= info.duration_ms <= clip_ms + 100
+    # Measured over the middle of the clip, clear of the 5 ms fades.
+    assert mean_volume_db(tmp_path / "out" / f"clip_{clip_ms}.wav", 0.1, clip_ms / 1000 - 0.1) > -25
+
+
+def test_extract_levelled_leaves_silence_alone(tmp_path):
+    audio = AudioService()
+    source = tmp_path / "silence.wav"
+    subprocess.run(
+        ["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-t", "3", "-i", "anullsrc=r=24000:cl=mono", str(source)],
+        check=True,
+    )
+
+    info = audio.extract_levelled(source, 0, 2000, tmp_path / "out" / "silent.wav")
+
+    assert 1900 <= info.duration_ms <= 2100
+    assert mean_volume_db(tmp_path / "out" / "silent.wav", 0.1, 1.9) < -60
