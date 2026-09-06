@@ -7,15 +7,31 @@ import uuid
 from pathlib import Path
 from typing import Callable, TypeVar
 
-from . import speaking_profile
+from . import recordings, speaking_profile
 from .ai import AIClient, PROMPT_VERSION
 from .audio import AudioService
 from .config import Settings
 from .database import Database, utc_now
-from .direction import segment_gap_ms
+from .direction import MIN_GAP_MS, segment_gap_ms
+from .schemas import QAEvaluation
 
 
 T = TypeVar("T")
+
+CONFIRM_NOTE = "Recorded audio kept as is. Confirm."
+ENGLISH_NOTE = "Possible recorded audio (English speech in transcript). Mark as original if so."
+DURATION_RANGE = (0.55, 1.45)
+
+
+def kept_qa() -> dict:
+    """QA payload for a recording kept from the source: nothing to check, but a reviewer must confirm."""
+    return {
+        "passed": False,
+        "severity": "low",
+        "issues": [CONFIRM_NOTE],
+        "recommended_stage_to_retry": "none",
+        "duration_ratio": 1.0,
+    }
 
 
 class Pipeline:
@@ -33,6 +49,14 @@ class Pipeline:
             (status, stage, progress, error, job_id),
         )
 
+    def _warn(self, job_id: str, message: str) -> None:
+        """Record a non-fatal problem on the job so the reviewer sees it."""
+        job = self.db.one("SELECT warnings_json FROM jobs WHERE id=?", (job_id,))
+        warnings = list((job or {}).get("warnings") or [])
+        warnings.append(message)
+        self.db.execute("UPDATE jobs SET warnings_json=? WHERE id=?", (json.dumps(warnings), job_id))
+        print(f"Job {job_id}: {message}")
+
     def _direction_inputs(self, project: dict, config: dict) -> tuple[str | None, float]:
         """The project-level persona override (strings only) and the job's speaking speed."""
         persona = (project.get("narrator_profile") or {}).get("persona")
@@ -40,10 +64,16 @@ class Pipeline:
             persona = None
         return persona, config.get("speed", self.config.tts_speed)
 
+    def _normalized_path(self, project_id: str) -> Path:
+        return self.config.data_dir / "projects" / project_id / "original" / "source_normalized.wav"
+
+    def _generated_dir(self, project_id: str, job_id: str) -> Path:
+        return self.config.data_dir / "projects" / project_id / "generated" / job_id
+
     def _tracked_call(
         self,
         job_id: str,
-        segment_id: str,
+        segment_id: str | None,
         stage: str,
         model: str,
         input_value: str,
@@ -106,6 +136,196 @@ class Pipeline:
         )
         return profile
 
+    def _narrator_reference(self, job_id: str, project: dict, normalized: Path, profile: dict, config: dict) -> Path | None:
+        """A 2-10 s clip of the narrator, so diarization can label their speech by name.
+
+        Chosen once per project from the delivery sample and stored in the speaking profile. Any
+        failure disables recording detection for this job with a warning; it never fails the job.
+        """
+        stored = (profile.get("narrator_reference") or {}) if profile else {}
+        if stored.get("path") and Path(stored["path"]).exists():
+            return Path(stored["path"])
+        model = config.get("diarize_model", self.config.diarize_model)
+        try:
+            sample = normalized.parent / "delivery_sample.wav"
+            if not sample.exists():
+                duration_s = (profile.get("measured") or {}).get("duration_s") or self.audio.probe(normalized).duration_ms / 1000
+                speaking_profile.extract_sample(normalized, sample, duration_s, self.config.ffmpeg)
+            ai = self._ai()
+            spans = self._tracked_call(job_id, None, "diarization", model, str(sample), lambda: ai.diarize(sample, model))
+            window = recordings.choose_reference(spans)
+            if window is None:
+                self._warn(job_id, "Recording detection unavailable: no clear narrator speech in the delivery sample")
+                return None
+            start_s, end_s = window
+            reference = normalized.parent / "narrator_reference.wav"
+            self.audio.extract(sample, round(start_s * 1000), round(end_s * 1000), reference, pad_ms=0)
+            profile["narrator_reference"] = {"path": str(reference), "start_s": start_s, "end_s": end_s}
+            self.db.execute(
+                "UPDATE projects SET speaking_profile_json=?, updated_at=? WHERE id=?",
+                (json.dumps(profile), utc_now(), project["id"]),
+            )
+            return reference
+        except Exception as exc:  # noqa: BLE001 - detection is an enhancement, not a gate
+            traceback.print_exc()
+            self._warn(job_id, f"Recording detection unavailable: {str(exc)[:200]}")
+            return None
+
+    def _create_segments(
+        self,
+        job_id: str,
+        project: dict,
+        normalized: Path,
+        chunks: list[tuple[int, int, Path]],
+        reference: Path | None,
+        config: dict,
+    ) -> list[str]:
+        """One row per piece: narration to be voiced, or a recording kept from the source."""
+        self.db.execute("DELETE FROM segments WHERE job_id=?", (job_id,))
+        model = config.get("diarize_model", self.config.diarize_model)
+        ai = self._ai() if reference is not None else None
+        generated = self._generated_dir(project["id"], job_id)
+        segment_ids: list[str] = []
+        index = 0
+        for chunk_index, (chunk_start, chunk_end, chunk_path) in enumerate(chunks, start=1):
+            spans: list[dict] = []
+            pieces: list[recordings.Piece] = [(chunk_start, chunk_end, "narration")]
+            if reference is not None:
+                try:
+                    spans = self._tracked_call(
+                        job_id, None, "diarization", model, str(chunk_path),
+                        lambda: ai.diarize(chunk_path, model, reference),
+                    )
+                    originals = recordings.original_spans(spans, chunk_end - chunk_start)
+                    pieces = recordings.cut_plan(chunk_start, chunk_end, originals, recordings.narration_spans(spans))
+                except Exception as exc:  # noqa: BLE001 - one chunk's detection must not fail the job
+                    traceback.print_exc()
+                    self._warn(job_id, f"Recording detection failed on chunk {chunk_index}: {str(exc)[:200]}")
+                    spans, pieces = [], [(chunk_start, chunk_end, "narration")]
+            for start_ms, end_ms, kind in pieces:
+                index += 1
+                segment_id = str(uuid.uuid4())
+                segment_ids.append(segment_id)
+                if kind == "original":
+                    clip = generated / f"{index:04d}_original.wav"
+                    info = self.audio.extract_levelled(normalized, start_ms, end_ms, clip)
+                    text = recordings.clip_text(spans, start_ms - chunk_start, end_ms - chunk_start)
+                    self.db.execute(
+                        "INSERT INTO segments(id, job_id, project_id, segment_index, start_ms, end_ms, source_audio_path, kind, "
+                        "transcript_si, tts_audio_path, tts_duration_ms, qa_json, qa_status, status, updated_at) "
+                        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (segment_id, job_id, project["id"], index, start_ms, end_ms, str(clip), "original",
+                         text, str(clip), info.duration_ms, json.dumps(kept_qa()), "needs_review", "kept", utc_now()),
+                    )
+                    continue
+                source_path = chunk_path
+                if (start_ms, end_ms) != (chunk_start, chunk_end):
+                    source_path = chunk_path.parent / f"{index:04d}_piece.wav"
+                    self.audio.extract(normalized, start_ms, end_ms, source_path)
+                self.db.execute(
+                    "INSERT INTO segments(id, job_id, project_id, segment_index, start_ms, end_ms, source_audio_path, kind, updated_at) "
+                    "VALUES(?,?,?,?,?,?,?,?,?)",
+                    (segment_id, job_id, project["id"], index, start_ms, end_ms, str(source_path), "narration", utc_now()),
+                )
+        return segment_ids
+
+    def _qa_verdict(
+        self,
+        qa: QAEvaluation,
+        transcript: str,
+        tts_duration_ms: int | None,
+        segment: dict,
+        check_duration: bool = True,
+    ) -> dict:
+        """Model QA plus the mechanical checks: duration ratio, and an English run that looks like a recording.
+
+        `check_duration` is False when a segment's start/end came from a detected recording's
+        real-world timing rather than narrator pacing (e.g. right after `set_segment_kind` turns a
+        kept recording into freshly authored narration) - the usual pacing ratio isn't meaningful there.
+        """
+        payload = qa.model_dump()
+        if check_duration and tts_duration_ms:
+            ratio = tts_duration_ms / max(1, segment["end_ms"] - segment["start_ms"])
+            payload["duration_ratio"] = round(ratio, 3)
+            low, high = DURATION_RANGE
+            if not low <= ratio <= high:
+                payload["passed"] = False
+                payload["issues"] = payload["issues"] + [f"Duration ratio {ratio:.2f} is outside {low}-{high}"]
+                payload["recommended_stage_to_retry"] = "tts"
+        if recordings.english_run(transcript):
+            payload["passed"] = False
+            payload["issues"] = payload["issues"] + [ENGLISH_NOTE]
+        return payload
+
+    def _narrate_segment(
+        self,
+        ai: AIClient,
+        job: dict,
+        project: dict,
+        segment: dict,
+        profile: dict | None,
+        previous_context: str,
+        previous_style: dict | None,
+        persona: str | None,
+        speed: float,
+        check_duration: bool = True,
+    ) -> tuple[str, dict]:
+        """Run every narration stage for one segment and return the context the next one inherits."""
+        job_id, segment_id, config = job["id"], segment["id"], job["config"]
+        transcript = self._tracked_call(
+            job_id, segment_id, "transcription", config["stt_model"], str(segment["source_audio_path"]),
+            lambda: ai.transcribe(Path(segment["source_audio_path"]), config["stt_model"], project["topic"], project["glossary"]),
+        )
+        self.db.execute(
+            "UPDATE segments SET transcript_si=?, status='transcribed', updated_at=? WHERE id=?",
+            (transcript, utc_now(), segment_id),
+        )
+
+        faithful = self._tracked_call(
+            job_id, segment_id, "translation", config["text_model"], transcript,
+            lambda: ai.translate(transcript, config["text_model"], project["topic"], project["glossary"], previous_context[-1000:]),
+        )
+        self.db.execute(
+            "UPDATE segments SET faithful_en=?, entities_json=?, numbers_json=?, status='translated', updated_at=? WHERE id=?",
+            (faithful.english_faithful, json.dumps(faithful.entities), json.dumps(faithful.numbers), utc_now(), segment_id),
+        )
+
+        adaptation = self._tracked_call(
+            job_id, segment_id, "adaptation", config["text_model"], faithful.english_faithful,
+            lambda: ai.adapt(faithful.english_faithful, config["text_model"], project["narrator_profile"] or {}, previous_context[-600:]),
+        )
+        style = adaptation.model_dump(exclude={"narration_text"})
+        self.db.execute(
+            "UPDATE segments SET narration_en=?, style_json=?, status='adapted', updated_at=? WHERE id=?",
+            (adaptation.narration_text, json.dumps(style), utc_now(), segment_id),
+        )
+
+        tts_path = self._generated_dir(project["id"], job_id) / f"{segment['segment_index']:04d}_r{segment['revision']:02d}.wav"
+        self._tracked_call(
+            job_id, segment_id, "tts", config["tts_model"], adaptation.narration_text,
+            lambda: ai.synthesize(
+                adaptation.narration_text, config["tts_model"], config["voice"], style, tts_path,
+                profile, previous_style, persona, speed,
+            ),
+        )
+        tts_duration = self.audio.probe(tts_path).duration_ms
+        self.db.execute(
+            "UPDATE segments SET tts_audio_path=?, tts_duration_ms=?, status='generated', updated_at=? WHERE id=?",
+            (str(tts_path), tts_duration, utc_now(), segment_id),
+        )
+
+        qa = self._tracked_call(
+            job_id, segment_id, "qa", config["qa_model"], faithful.english_faithful + adaptation.narration_text,
+            lambda: ai.evaluate(faithful.english_faithful, adaptation.narration_text, config["qa_model"]),
+        )
+        qa_payload = self._qa_verdict(qa, transcript, tts_duration, segment, check_duration)
+        qa_status = "passed" if qa_payload["passed"] else "needs_review"
+        self.db.execute(
+            "UPDATE segments SET qa_json=?, qa_status=?, status=?, updated_at=? WHERE id=?",
+            (json.dumps(qa_payload), qa_status, qa_status, utc_now(), segment_id),
+        )
+        return adaptation.narration_text, style
+
     def process_job(self, job_id: str) -> None:
         job = self.db.one("SELECT * FROM jobs WHERE id=?", (job_id,))
         if not job:
@@ -125,88 +345,32 @@ class Pipeline:
             self._job_update(job_id, status="running", stage="analyzing", progress=5)
             profile = self._speaking_profile(job_id, project, normalized, config)
 
+            reference = None
+            if config.get("detect_recordings", self.config.detect_recordings):
+                self._job_update(job_id, status="running", stage="finding recordings", progress=7)
+                reference = self._narrator_reference(job_id, project, normalized, profile, config)
+
             self._job_update(job_id, status="running", stage="segmenting", progress=8)
             chunks = self.audio.split(normalized, project_dir / "segments" / job_id)
-            self.db.execute("DELETE FROM segments WHERE job_id=?", (job_id,))
-            segment_ids: list[str] = []
-            for index, (start_ms, end_ms, chunk_path) in enumerate(chunks, start=1):
-                segment_id = str(uuid.uuid4())
-                segment_ids.append(segment_id)
-                self.db.execute(
-                    "INSERT INTO segments(id, job_id, project_id, segment_index, start_ms, end_ms, source_audio_path, updated_at) "
-                    "VALUES(?,?,?,?,?,?,?,?)",
-                    (segment_id, job_id, project["id"], index, start_ms, end_ms, str(chunk_path), utc_now()),
-                )
+            segment_ids = self._create_segments(job_id, project, normalized, chunks, reference, config)
 
             ai = self._ai()
             previous_context = ""
             previous_style: dict | None = None
             persona, speed = self._direction_inputs(project, config)
+            total = len(segment_ids)
             for position, segment_id in enumerate(segment_ids):
-                base_progress = 10 + round(80 * position / max(len(segment_ids), 1))
+                base_progress = 10 + round(80 * position / max(total, 1))
                 segment = self.db.one("SELECT * FROM segments WHERE id=?", (segment_id,))
                 assert segment
-                self._job_update(job_id, status="running", stage=f"transcribing {position + 1}/{len(segment_ids)}", progress=base_progress)
-                transcript = self._tracked_call(
-                    job_id, segment_id, "transcription", config["stt_model"], str(segment["source_audio_path"]),
-                    lambda: ai.transcribe(Path(segment["source_audio_path"]), config["stt_model"], project["topic"], project["glossary"]),
+                if segment["kind"] == "original":
+                    self._job_update(job_id, status="running", stage=f"keeping recording {position + 1}/{total}", progress=base_progress)
+                    previous_context += f"\n[Recording plays: {segment['transcript_si']}]"
+                    continue
+                self._job_update(job_id, status="running", stage=f"transcribing {position + 1}/{total}", progress=base_progress)
+                previous_context, previous_style = self._narrate_segment(
+                    ai, job, project, segment, profile, previous_context, previous_style, persona, speed,
                 )
-                self.db.execute(
-                    "UPDATE segments SET transcript_si=?, status='transcribed', updated_at=? WHERE id=?",
-                    (transcript, utc_now(), segment_id),
-                )
-
-                faithful = self._tracked_call(
-                    job_id, segment_id, "translation", config["text_model"], transcript,
-                    lambda: ai.translate(transcript, config["text_model"], project["topic"], project["glossary"], previous_context[-1000:]),
-                )
-                self.db.execute(
-                    "UPDATE segments SET faithful_en=?, entities_json=?, numbers_json=?, status='translated', updated_at=? WHERE id=?",
-                    (faithful.english_faithful, json.dumps(faithful.entities), json.dumps(faithful.numbers), utc_now(), segment_id),
-                )
-
-                adaptation = self._tracked_call(
-                    job_id, segment_id, "adaptation", config["text_model"], faithful.english_faithful,
-                    lambda: ai.adapt(faithful.english_faithful, config["text_model"], project["narrator_profile"] or {}, previous_context[-600:]),
-                )
-                style = adaptation.model_dump(exclude={"narration_text"})
-                self.db.execute(
-                    "UPDATE segments SET narration_en=?, style_json=?, status='adapted', updated_at=? WHERE id=?",
-                    (adaptation.narration_text, json.dumps(style), utc_now(), segment_id),
-                )
-
-                tts_path = project_dir / "generated" / job_id / f"{segment['segment_index']:04d}_r01.wav"
-                self._tracked_call(
-                    job_id, segment_id, "tts", config["tts_model"], adaptation.narration_text,
-                    lambda: ai.synthesize(
-                        adaptation.narration_text, config["tts_model"], config["voice"], style, tts_path,
-                        profile, previous_style, persona, speed,
-                    ),
-                )
-                tts_duration = self.audio.probe(tts_path).duration_ms
-                self.db.execute(
-                    "UPDATE segments SET tts_audio_path=?, tts_duration_ms=?, status='generated', updated_at=? WHERE id=?",
-                    (str(tts_path), tts_duration, utc_now(), segment_id),
-                )
-
-                qa = self._tracked_call(
-                    job_id, segment_id, "qa", config["qa_model"], faithful.english_faithful + adaptation.narration_text,
-                    lambda: ai.evaluate(faithful.english_faithful, adaptation.narration_text, config["qa_model"]),
-                )
-                source_duration = segment["end_ms"] - segment["start_ms"]
-                duration_ratio = tts_duration / source_duration if source_duration else 0
-                qa_payload = qa.model_dump() | {"duration_ratio": round(duration_ratio, 3)}
-                if not 0.55 <= duration_ratio <= 1.45:
-                    qa_payload["passed"] = False
-                    qa_payload["issues"] = qa_payload["issues"] + [f"Duration ratio {duration_ratio:.2f} is outside 0.55-1.45"]
-                    qa_payload["recommended_stage_to_retry"] = "tts"
-                qa_status = "passed" if qa_payload["passed"] else "needs_review"
-                self.db.execute(
-                    "UPDATE segments SET qa_json=?, qa_status=?, status=?, updated_at=? WHERE id=?",
-                    (json.dumps(qa_payload), qa_status, qa_status, utc_now(), segment_id),
-                )
-                previous_context = adaptation.narration_text
-                previous_style = style
 
             failed = self.db.one("SELECT COUNT(*) AS count FROM segments WHERE job_id=? AND qa_status!='passed'", (job_id,))["count"]
             if config.get("human_review_gate", True) or failed:
@@ -220,6 +384,34 @@ class Pipeline:
             self._job_update(job_id, status="failed", stage="failed", progress=0, error=str(exc)[:2000])
             self.db.execute("UPDATE projects SET status='failed', updated_at=? WHERE id=?", (utc_now(), project["id"]))
 
+    def _previous_narration(self, job_id: str, segment_index: int) -> tuple[str, dict | None]:
+        """The nearest earlier narration segment's script and style, skipping kept recordings."""
+        predecessor = self.db.one(
+            "SELECT narration_en, style_json FROM segments WHERE job_id=? AND kind='narration' AND segment_index<? "
+            "ORDER BY segment_index DESC LIMIT 1",
+            (job_id, segment_index),
+        )
+        if not predecessor:
+            return "", None
+        return predecessor["narration_en"], predecessor["style"]
+
+    def _recut_original(self, segment: dict, job: dict, project: dict) -> None:
+        """Cut the recording from the source again; nothing is generated for it."""
+        try:
+            revision = segment["revision"] + 1
+            clip = self._generated_dir(project["id"], job["id"]) / f"{segment['segment_index']:04d}_original_r{revision:02d}.wav"
+            info = self.audio.extract_levelled(self._normalized_path(project["id"]), segment["start_ms"], segment["end_ms"], clip)
+            self.db.execute(
+                "UPDATE segments SET tts_audio_path=?, tts_duration_ms=?, revision=?, qa_json=?, qa_status='needs_review', "
+                "status='kept', updated_at=? WHERE id=?",
+                (str(clip), info.duration_ms, revision, json.dumps(kept_qa()), utc_now(), segment["id"]),
+            )
+        except Exception as exc:  # noqa: BLE001 - reported on the segment, as regeneration does
+            self.db.execute(
+                "UPDATE segments SET status='failed', qa_status='failed', qa_json=?, updated_at=? WHERE id=?",
+                (json.dumps({"passed": False, "issues": [str(exc)]}), utc_now(), segment["id"]),
+            )
+
     def regenerate_segment(self, segment_id: str, stage: str) -> None:
         segment = self.db.one("SELECT * FROM segments WHERE id=?", (segment_id,))
         if not segment:
@@ -227,14 +419,12 @@ class Pipeline:
         job = self.db.one("SELECT * FROM jobs WHERE id=?", (segment["job_id"],))
         project = self.db.one("SELECT * FROM projects WHERE id=?", (segment["project_id"],))
         assert job and project
+        if segment["kind"] == "original":
+            self._recut_original(segment, job, project)
+            return
         ai = self._ai()
         config = job["config"]
-        predecessor = self.db.one(
-            "SELECT narration_en, style_json FROM segments WHERE job_id=? AND segment_index=?",
-            (job["id"], segment["segment_index"] - 1),
-        )
-        previous_narration = predecessor["narration_en"] if predecessor else ""
-        previous_style = predecessor["style"] if predecessor else None
+        previous_narration, previous_style = self._previous_narration(job["id"], segment["segment_index"])
         persona, speed = self._direction_inputs(project, config)
         try:
             faithful_text = segment["faithful_en"]
@@ -265,7 +455,7 @@ class Pipeline:
                 stage = "tts"
             if stage == "tts":
                 revision = segment["revision"] + 1
-                tts_path = self.config.data_dir / "projects" / project["id"] / "generated" / job["id"] / f"{segment['segment_index']:04d}_r{revision:02d}.wav"
+                tts_path = self._generated_dir(project["id"], job["id"]) / f"{segment['segment_index']:04d}_r{revision:02d}.wav"
                 self._tracked_call(
                     job["id"], segment_id, "tts", config["tts_model"], narration_text,
                     lambda: ai.synthesize(
@@ -284,14 +474,7 @@ class Pipeline:
                 job["id"], segment_id, "qa", config["qa_model"], fresh["faithful_en"] + fresh["narration_en"],
                 lambda: ai.evaluate(fresh["faithful_en"], fresh["narration_en"], config["qa_model"]),
             )
-            qa_payload = qa.model_dump()
-            if fresh.get("tts_duration_ms"):
-                ratio = fresh["tts_duration_ms"] / max(1, fresh["end_ms"] - fresh["start_ms"])
-                qa_payload["duration_ratio"] = round(ratio, 3)
-                if not 0.55 <= ratio <= 1.45:
-                    qa_payload["passed"] = False
-                    qa_payload["issues"].append(f"Duration ratio {ratio:.2f} is outside 0.55-1.45")
-                    qa_payload["recommended_stage_to_retry"] = "tts"
+            qa_payload = self._qa_verdict(qa, fresh["transcript_si"], fresh.get("tts_duration_ms"), fresh)
             status = "passed" if qa_payload["passed"] else "needs_review"
             self.db.execute(
                 "UPDATE segments SET qa_json=?, qa_status=?, status=?, updated_at=? WHERE id=?",
@@ -302,6 +485,57 @@ class Pipeline:
                 "UPDATE segments SET status='failed', qa_status='failed', qa_json=?, updated_at=? WHERE id=?",
                 (json.dumps({"passed": False, "issues": [str(exc)]}), utc_now(), segment_id),
             )
+
+    def set_segment_kind(self, segment_id: str, kind: str) -> None:
+        """Reviewer override: keep a segment as recorded, or voice one that detection kept."""
+        segment = self.db.one("SELECT * FROM segments WHERE id=?", (segment_id,))
+        if not segment:
+            return
+        job = self.db.one("SELECT * FROM jobs WHERE id=?", (segment["job_id"],))
+        project = self.db.one("SELECT * FROM projects WHERE id=?", (segment["project_id"],))
+        assert job and project
+        if kind == "original":
+            self.db.execute(
+                "UPDATE segments SET kind='original', faithful_en='', narration_en='', style_json='{}', updated_at=? WHERE id=?",
+                (utc_now(), segment_id),
+            )
+            fresh = self.db.one("SELECT * FROM segments WHERE id=?", (segment_id,))
+            assert fresh
+            self._recut_original(fresh, job, project)
+            return
+        self.db.execute(
+            "UPDATE segments SET kind='narration', tts_audio_path=NULL, tts_duration_ms=NULL, qa_json='{}', "
+            "qa_status='pending', status='created', revision=revision+1, updated_at=? WHERE id=?",
+            (utc_now(), segment_id),
+        )
+        try:
+            fresh = self.db.one("SELECT * FROM segments WHERE id=?", (segment_id,))
+            assert fresh
+            previous_narration, previous_style = self._previous_narration(job["id"], fresh["segment_index"])
+            persona, speed = self._direction_inputs(project, job["config"])
+            self._narrate_segment(
+                self._ai(), job, project, fresh, project.get("speaking_profile"),
+                previous_narration, previous_style, persona, speed, check_duration=False,
+            )
+        except Exception as exc:  # noqa: BLE001 - reported on the segment, as regeneration does
+            traceback.print_exc()
+            self.db.execute(
+                "UPDATE segments SET status='failed', qa_status='failed', qa_json=?, updated_at=? WHERE id=?",
+                (json.dumps({"passed": False, "issues": [str(exc)]}), utc_now(), segment_id),
+            )
+
+    def confirm_segment(self, segment_id: str) -> None:
+        """The reviewer has listened to a kept recording and accepts it."""
+        segment = self.db.one("SELECT * FROM segments WHERE id=?", (segment_id,))
+        if not segment or segment.get("kind") != "original":
+            raise RuntimeError("Only recorded-audio segments need confirming")
+        qa = dict(segment.get("qa") or kept_qa())
+        qa["passed"] = True
+        qa["issues"] = [issue for issue in qa.get("issues", []) if issue != CONFIRM_NOTE]
+        self.db.execute(
+            "UPDATE segments SET qa_json=?, qa_status='passed', status='kept', updated_at=? WHERE id=?",
+            (json.dumps(qa), utc_now(), segment_id),
+        )
 
     def assemble_project(self, project_id: str, job_id: str | None = None) -> dict[str, str]:
         if not job_id:
@@ -318,16 +552,17 @@ class Pipeline:
         project = self.db.one("SELECT speaking_profile_json FROM projects WHERE id=?", (project_id,))
         profile = project.get("speaking_profile") if project else None
         gaps = [
-            segment_gap_ms(earlier.get("style"), later.get("style"), profile)
+            MIN_GAP_MS if "original" in (earlier.get("kind"), later.get("kind"))
+            else segment_gap_ms(earlier.get("style"), later.get("style"), profile)
             for earlier, later in zip(segments, segments[1:])
         ]
         self.audio.assemble([Path(s["tts_audio_path"]) for s in segments], wav_path, mp3_path, gaps)
         (export_dir / "transcript_si.json").write_text(
-            json.dumps([{"index": s["segment_index"], "start_ms": s["start_ms"], "end_ms": s["end_ms"], "text": s["transcript_si"]} for s in segments], ensure_ascii=False, indent=2),
+            json.dumps([{"index": s["segment_index"], "kind": s.get("kind", "narration"), "start_ms": s["start_ms"], "end_ms": s["end_ms"], "text": s["transcript_si"]} for s in segments], ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
         (export_dir / "script_en.json").write_text(
-            json.dumps([{"index": s["segment_index"], "faithful": s["faithful_en"], "narration": s["narration_en"], "qa": s["qa"]} for s in segments], ensure_ascii=False, indent=2),
+            json.dumps([{"index": s["segment_index"], "kind": s.get("kind", "narration"), "faithful": s["faithful_en"], "narration": s["narration_en"], "qa": s["qa"]} for s in segments], ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
         self.db.execute("UPDATE projects SET status='completed', updated_at=? WHERE id=?", (utc_now(), project_id))
