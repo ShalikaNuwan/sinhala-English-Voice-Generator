@@ -39,15 +39,17 @@ Files are limited to 25 MB; the pipeline's 20–60 s chunks at 24 kHz mono are u
    `original/narrator_reference.wav` and recorded in the project's speaking profile JSON as
    `narrator_reference`. If no span reaches 2 s, detection is disabled for the job with a warning.
 2. **Per chunk.** After the existing silence-based split, each chunk file is diarized with the
-   narrator reference. Spans whose text contains letters from a non-Latin script are the narrator
-   speaking (the diarizer renders Sinhala in Sinhala or, occasionally, Devanagari script). A
-   recording opens at a span that is Latin-only or empty **and** not labelled `narrator`, and stays
-   open across every following span, including silences of several seconds and short Latin-only
-   spans mislabelled as narrator, until a non-Latin span closes it or a gap exceeds 10 s. Requiring
-   the script test protects against a failed reference match. Recordings under 1.5 s are ignored;
-   each remaining one is padded 150 ms into the surrounding silence, clamped to the chunk. (A paid
-   probe on the Gilgo Beach 911-call chunk shaped this rule: the call has 3–4.5 s silences between
-   dispatcher lines and one "Okay." mislabelled as narrator.)
+   narrator reference. The narrator is heard in any span whose text contains letters from a
+   non-Latin script (the diarizer renders Sinhala in Sinhala or, occasionally, Devanagari script)
+   and in any span labelled `narrator` that is longer than 2 s (the diarizer sometimes writes the
+   narrator's Sinhala in Latin letters; the label is then the only signal). A recording opens at a
+   span that is Latin-only or empty **and** not labelled `narrator`, and stays open across every
+   following span, including silences of several seconds and narrator-labelled Latin asides of up
+   to 2 s, until the narrator is heard or a gap exceeds 10 s. Recordings under 1.5 s are ignored;
+   each remaining one is padded 150 ms into the surrounding silence, clamped to the chunk. (Two
+   paid probes on the Gilgo Beach 911-call chunk shaped this rule: the call has 3–4.5 s silences
+   between dispatcher lines, one "Okay." was mislabelled as narrator, and on one run the narrator's
+   13 s intro came back transliterated into Latin letters with the correct label.)
 3. **Re-cut.** The chunk becomes an ordered list of pieces, each `narration` or `original`. A
    narration piece is kept only if it overlaps a span of narrator speech; a piece with no narrator
    speech (leading or trailing silence, a call's own pause) is absorbed into the neighbouring
@@ -77,7 +79,8 @@ Files are limited to 25 MB; the pipeline's 20–60 s chunks at 24 kHz mono are u
 - `original_spans(spans, chunk_ms) -> list[tuple[int, int]]`: the rule in step 2 above, in ms
   relative to the chunk. Constants `MAX_INTERNAL_GAP_MS = 10000`, `MIN_SPAN_MS = 1500`,
   `PAD_MS = 150`.
-- `narration_spans(spans) -> list[tuple[int, int]]`: spans with foreign script, in ms.
+- `narration_spans(spans) -> list[tuple[int, int]]`: spans where the narrator is heard (foreign script,
+  or narrator-labelled and longer than `MAX_ASIDE_MS = 2000`), in ms.
 - `cut_plan(chunk_start_ms, chunk_end_ms, originals, narration) -> list[Piece]` where
   `Piece = (start_ms, end_ms, kind)` in absolute source time; the rule in step 3 above.
 - `english_run(text, minimum_words=8) -> bool`: true when the text contains a run of at least

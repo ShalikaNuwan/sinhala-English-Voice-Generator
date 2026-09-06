@@ -23,6 +23,9 @@ MAX_INTERNAL_GAP_MS = 10_000
 MIN_SPAN_MS = 1500
 # Room into the surrounding silence so a cut never clips a word.
 PAD_MS = 150
+# A narrator-labelled span inside a recording is a mislabelled aside only if it is this short;
+# anything longer is the narrator talking (the diarizer sometimes writes Sinhala in Latin letters).
+MAX_ASIDE_MS = 2000
 
 Piece = tuple[int, int, str]
 
@@ -58,22 +61,26 @@ def choose_reference(spans: list[dict]) -> tuple[float, float] | None:
     return start, min(end, start + REFERENCE_MAX_S)
 
 
+def is_narrator_speech(item: dict) -> bool:
+    """The narrator is heard when the text is not Latin-only, or when the diarizer labels a span as the
+    narrator for longer than an aside (short narrator-labelled Latin spans are usually mislabels)."""
+    if has_foreign_script(item.get("text") or ""):
+        return True
+    return item.get("speaker") == NARRATOR and _ms(item["end"]) - _ms(item["start"]) > MAX_ASIDE_MS
+
+
 def narration_spans(spans: list[dict]) -> list[tuple[int, int]]:
     """Where the narrator is actually heard, in ms relative to the chunk."""
-    return sorted(
-        (_ms(item["start"]), _ms(item["end"]))
-        for item in spans
-        if has_foreign_script(item.get("text") or "")
-    )
+    return sorted((_ms(item["start"]), _ms(item["end"])) for item in spans if is_narrator_speech(item))
 
 
 def original_spans(spans: list[dict], chunk_ms: int) -> list[tuple[int, int]]:
     """Embedded recordings in ms relative to the chunk.
 
     A recording opens at a Latin-only or empty span by someone other than the narrator and stays
-    open across silences and across any Latin-only spans, however they are labelled, until the
-    narrator speaks (non-Latin letters) or the gap exceeds MAX_INTERNAL_GAP_MS. The review gate is
-    the guard against a diarizer that writes Sinhala in Latin letters.
+    open across silences and short narrator-labelled asides until the narrator is heard (non-Latin
+    letters, or a narrator-labelled span longer than MAX_ASIDE_MS) or the gap exceeds
+    MAX_INTERNAL_GAP_MS. The aside cap is what protects narration the diarizer wrote in Latin letters.
     """
     found: list[list[int]] = []
     current: list[int] | None = None
@@ -87,17 +94,17 @@ def original_spans(spans: list[dict], chunk_ms: int) -> list[tuple[int, int]]:
     for item in sorted(spans, key=lambda item: float(item["start"])):
         start, end = _ms(item["start"]), _ms(item["end"])
         end = max(start, end)
-        if has_foreign_script(item.get("text") or ""):
+        labelled_narrator = item.get("speaker") == NARRATOR
+        if has_foreign_script(item.get("text") or "") or (labelled_narrator and end - start > MAX_ASIDE_MS):
             close()
             continue
-        other = item.get("speaker") != NARRATOR
         if current is None:
-            if other:
+            if not labelled_narrator:
                 current = [start, end]
             continue
         if start - current[1] > MAX_INTERNAL_GAP_MS:
             close()
-            if other:
+            if not labelled_narrator:
                 current = [start, end]
             continue
         current[1] = max(current[1], end)

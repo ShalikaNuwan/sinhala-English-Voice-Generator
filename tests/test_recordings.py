@@ -179,3 +179,53 @@ def test_cut_plan_with_two_separated_recordings():
 
 def test_english_run_fires_on_an_all_english_transcript():
     assert recordings.english_run("Where? Tell me. Where on Long Island are you? I don't know.")
+
+
+# What the pipeline actually saw on a real chunk: the narrator's Sinhala came back in Latin letters.
+TRANSLITERATED = "Kedath Dhahaye Mai Palaveni Dah Pandra Hatharai Panas Ekata Niv York State Police Dispatch"
+
+
+def test_a_narrator_span_counts_as_narration_even_when_written_in_latin_letters():
+    spans = [
+        span(recordings.NARRATOR, 0, 9.85, TRANSLITERATED),
+        span("A", 9.85, 9.95, "9"),
+        span(recordings.NARRATOR, 9.95, 13.85, "Ea Sehema Kalabala Vela Vageema Baya Vela Vage Tamai Kathakaranai."),
+        span("A", 14.25, 15.45, "-1-1, how can I assist you?"),
+        span("A", 18.05, 18.55, "Hello?"),
+        span("A", 21.15, 21.50, "Hello?"),
+        span("A", 24.44, 26.29, "Hello, are you dialed into the 911 system?"),
+        span("A", 26.54, 27.69, "How can I assist you?"),
+        span("B", 30.74, 31.14, "Okay."),
+        span("A", 35.99, 36.44, "Where?"),
+    ]
+
+    assert recordings.narration_spans(spans) == [(0, 9850), (9950, 13850)]
+    assert recordings.original_spans(spans, 37482) == [(14100, 36590)]
+    plan = recordings.cut_plan(45000, 45000 + 37482, recordings.original_spans(spans, 37482), recordings.narration_spans(spans))
+    assert plan == [(45000, 45000 + 14100, "narration"), (45000 + 14100, 45000 + 37482, "original")]
+
+
+def test_a_long_narrator_labelled_latin_span_closes_a_recording():
+    spans = [
+        span("A", 0, 3, "Hello?"),
+        span(recordings.NARRATOR, 4, 9, "Ea Sehema Kalabala Vela Vageema Baya Vela"),
+        span("A", 10, 13, "Do you need the police?"),
+    ]
+
+    assert recordings.original_spans(spans, 15000) == [(0, 3150), (9850, 13150)]
+
+
+def test_a_short_narrator_labelled_aside_is_still_absorbed():
+    spans = [span("A", 0, 3, "Hello?"), span(recordings.NARRATOR, 4, 4.7, "Okay."), span("A", 5, 8, "Where?")]
+
+    assert recordings.original_spans(spans, 10000) == [(0, 8150)]
+
+
+def test_a_stray_fragment_between_narrator_spans_is_not_a_recording():
+    spans = [
+        span(recordings.NARRATOR, 0, 9.85, TRANSLITERATED),
+        span("A", 9.85, 9.95, "9"),
+        span(recordings.NARRATOR, 9.95, 20, TRANSLITERATED),
+    ]
+
+    assert recordings.original_spans(spans, 20000) == []
