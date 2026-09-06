@@ -269,3 +269,46 @@ def test_diarize_without_a_reference_omits_the_speaker_fields(tmp_path):
     assert ai.diarize(sample, "diarize-model") == []
     assert "known_speaker_names" not in captured
     assert "known_speaker_references" not in captured
+
+
+def test_word_timestamps_ask_whisper_for_word_granularity(tmp_path):
+    captured = {}
+
+    class Transcriptions:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(words=[
+                SimpleNamespace(word="On", start=0.0, end=0.24),
+                SimpleNamespace(word="May", start=0.24, end=0.5),
+            ])
+
+    ai = AIClient.__new__(AIClient)
+    ai.client = SimpleNamespace(audio=SimpleNamespace(transcriptions=Transcriptions()))
+    raw = tmp_path / "raw.wav"
+    raw.write_bytes(b"RIFFraw")
+
+    words = ai.word_timestamps(raw, "whisper-1")
+
+    assert captured["model"] == "whisper-1"
+    assert captured["response_format"] == "verbose_json"
+    assert captured["timestamp_granularities"] == ["word"]
+    assert captured["language"] == "en"
+    assert words == [{"word": "On", "start": 0.0, "end": 0.24}, {"word": "May", "start": 0.24, "end": 0.5}]
+
+
+def test_adaptation_limits_paragraph_breaks_and_ellipses():
+    captured = {}
+
+    class Responses:
+        def parse(self, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(output_parsed=NarrationAdaptation(narration_text="ok"))
+
+    ai = AIClient.__new__(AIClient)
+    ai.client = SimpleNamespace(responses=Responses())
+
+    ai.adapt("x", "m", {})
+
+    system = captured["input"][0]["content"]
+    assert "at most twice per passage" in system
+    assert "at most once per passage" in system

@@ -23,6 +23,8 @@ class ProcessRequest(BaseModel):
     speed: float | None = Field(default=None, ge=0.25, le=4.0)
     diarize_model: str | None = None
     detect_recordings: bool | None = None
+    align_model: str | None = None
+    shape_pauses: bool | None = None
     human_review_gate: bool = True
 
 

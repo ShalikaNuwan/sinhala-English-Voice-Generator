@@ -40,6 +40,8 @@ def job_configuration(payload: ProcessRequest, config: Settings) -> dict:
         "speed": payload.speed if payload.speed is not None else config.tts_speed,
         "diarize_model": payload.diarize_model or config.diarize_model,
         "detect_recordings": payload.detect_recordings if payload.detect_recordings is not None else config.detect_recordings,
+        "align_model": payload.align_model or config.align_model,
+        "shape_pauses": payload.shape_pauses if payload.shape_pauses is not None else config.shape_pauses,
         "human_review_gate": payload.human_review_gate,
     }
 

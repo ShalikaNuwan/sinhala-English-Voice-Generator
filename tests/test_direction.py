@@ -31,7 +31,7 @@ def test_brief_carries_the_narrator_profile_and_the_moment():
     assert "Steady, moderate energy" in text
     assert "deliberate" in text
     assert "moderately dynamic" in text
-    assert "1321" in text and "3547" in text
+    assert "1321" not in text and "3547" not in text  # pause lengths are shaped after synthesis, not requested
     # What this passage needs.
     assert "reveal beat" in text
     assert "calm, suspenseful" in text
@@ -71,7 +71,7 @@ def test_brief_uses_measurements_when_the_tone_analysis_failed():
     text = direction.build_instructions(STYLE, profile)
 
     assert "deliberate" in text
-    assert "1321" in text
+    assert "1321" not in text
     assert "Baseline pace is moderate, with deliberate pauses and moderately dynamic delivery." in text
     assert "Voice character" in text
 
@@ -131,7 +131,6 @@ def test_brief_fills_gaps_in_a_partial_profile():
     text = direction.build_instructions({}, {"derived": {"pace": None}, "measured": {"mean_pause_ms": 900}})
 
     assert "Baseline pace is moderate, with deliberate pauses and controlled delivery." in text
-    assert "the longest pause is about 900ms" in text
 
 
 def test_brief_uses_a_project_persona_when_one_is_given():

@@ -68,6 +68,25 @@ class AIClient:
             for segment in (_field(result, "segments") or [])
         ]
 
+    def word_timestamps(self, audio_path: Path, model: str) -> list[dict]:
+        """When each word of a voiced segment is spoken, so pauses can be tied to the script."""
+        with Path(audio_path).open("rb") as audio_file:
+            result = self.client.audio.transcriptions.create(
+                model=model,
+                file=audio_file,
+                response_format="verbose_json",
+                timestamp_granularities=["word"],
+                language="en",
+            )
+        return [
+            {
+                "word": _field(item, "word") or "",
+                "start": float(_field(item, "start") or 0.0),
+                "end": float(_field(item, "end") or 0.0),
+            }
+            for item in (_field(result, "words") or [])
+        ]
+
     def translate(
         self,
         transcript_si: str,
@@ -130,10 +149,10 @@ class AIClient:
                         "voice-over of a true-crime documentary. Write for the ear, not the page:\n"
                         "- Short sentences, one idea each. Use contractions. Avoid formal written-English "
                         "constructions.\n"
-                        "- Put an ellipsis (…) where the narrator should hold a beat, and a dash (—) for a change of "
-                        "thought or an afterthought. Use the characters … and — themselves, not ... or --, at most one "
-                        "or two of each per paragraph, and only where a person telling the story would actually pause.\n"
-                        "- Start a new paragraph (blank line) before a shift in the story.\n"
+                        "- Put an ellipsis (…) where the narrator should hold a beat, at most once per passage, and a dash "
+                        "(—) for a change of thought or an afterthought, at most twice. Use the characters … and — "
+                        "themselves, not ... or --, and only where a person telling the story would actually pause.\n"
+                        "- Start a new paragraph (blank line) only at a real shift in the story, at most twice per passage.\n"
                         "- Write dates, times, and numbers the way they are said aloud, for example "
                         "'May 1st, 2010' and '4:51 in the morning'.\n"
                         "- Keep quoted speech from 911 calls and witnesses as plain spoken lines.\n"

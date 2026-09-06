@@ -183,3 +183,15 @@ def test_kind_and_confirm_endpoints(tmp_path, monkeypatch):
     assert "Recorded audio kept as is. Confirm." not in confirmed.json()["qa"]["issues"]
 
     assert client.post(f"/api/segments/{narration_id}/confirm").status_code == 409
+
+
+def test_job_configuration_shapes_pauses_by_default():
+    from app.config import Settings
+    from app.main import job_configuration
+    from app.schemas import ProcessRequest
+
+    config = job_configuration(ProcessRequest(), Settings(openai_api_key="unused"))
+
+    assert config["align_model"] == "whisper-1"
+    assert config["shape_pauses"] is True
+    assert job_configuration(ProcessRequest(shape_pauses=False, align_model="w2"), Settings(openai_api_key="unused"))["shape_pauses"] is False

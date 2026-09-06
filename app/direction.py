@@ -43,7 +43,6 @@ DEFAULT_SPEED = 1.0
 def _character(profile: dict) -> str | None:
     """Describe the original speaker so the English narrator can match them."""
     derived = profile.get("derived") or {}
-    measured = profile.get("measured") or {}
     parts: list[str] = []
     if profile.get("described"):
         parts.append(profile["described"][:600])
@@ -52,13 +51,6 @@ def _character(profile: dict) -> str | None:
             f"Baseline pace is {derived.get('pace') or 'moderate'}, "
             f"with {derived.get('pause_style') or 'deliberate'} pauses and "
             f"{derived.get('dynamics') or 'controlled'} delivery."
-        )
-    if measured.get("mean_pause_ms"):
-        longest = measured.get("longest_pause_ms") or measured["mean_pause_ms"]
-        parts.append(
-            f"In the original, gaps between sentences average about {measured['mean_pause_ms']}ms and "
-            f"the longest pause is about {longest}ms. Match that habit: ordinary sentence gaps near the "
-            "average, the long pause only at the heaviest beat."
         )
     return " ".join(parts) if parts else None
 
