@@ -38,12 +38,29 @@ class FaithfulTranslation(BaseModel):
 
 
 class NarrationAdaptation(BaseModel):
-    narration_text: str
+    narration_text: str = Field(description="The script to be spoken aloud, written for the ear.")
+    beat: Literal["setup", "build", "reveal", "aftermath", "reflection"] = Field(
+        default="build",
+        description="Where this passage sits in the story arc.",
+    )
+    delivery: str = Field(
+        default="",
+        description="One sentence of direction to the voice actor for this passage.",
+    )
     pace: Literal["slow", "moderate", "fast"] = "moderate"
-    emphasis: list[str] = Field(default_factory=list)
-    pause_before_ms: int = Field(default=0, ge=0, le=3000)
-    pause_after_ms: int = Field(default=250, ge=0, le=3000)
-    emotion: str = "neutral"
+    emphasis: list[str] = Field(
+        default_factory=list,
+        description="Exact phrases from narration_text to give weight to.",
+    )
+    pause_before_ms: int = Field(
+        default=0, ge=0, le=3000,
+        description="Silence before this passage in milliseconds. 0 means use the narrator's usual gap.",
+    )
+    pause_after_ms: int = Field(
+        default=0, ge=0, le=3000,
+        description="Silence after this passage in milliseconds. 0 means use the narrator's usual gap.",
+    )
+    emotion: str = Field(default="neutral", description="The emotional tone of this passage, in a few words.")
 
 
 class QAEvaluation(BaseModel):

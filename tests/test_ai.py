@@ -54,3 +54,15 @@ def test_delivery_description_sends_the_audio_and_ignores_word_meaning(tmp_path)
     # The audio must actually be attached, base64 encoded.
     import base64
     assert base64.b64decode(audio_part["input_audio"]["data"]) == b"RIFFfake-audio-bytes"
+
+
+def test_adaptation_defaults_beat_and_delivery_when_the_model_omits_them():
+    from app.schemas import NarrationAdaptation
+
+    adaptation = NarrationAdaptation(narration_text="She never came home.")
+
+    assert adaptation.beat == "build"
+    assert adaptation.delivery == ""
+    assert adaptation.pause_after_ms == 0  # 0 means: use the narrator's usual gap at assembly
+    style = adaptation.model_dump(exclude={"narration_text"})
+    assert set(style) == {"beat", "delivery", "pace", "emphasis", "pause_before_ms", "pause_after_ms", "emotion"}
