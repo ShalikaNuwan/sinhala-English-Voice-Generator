@@ -9,6 +9,7 @@ from typing import Callable, TypeVar
 
 from . import speaking_profile
 from .ai import AIClient, PROMPT_VERSION
+from .direction import segment_gap_ms
 from .audio import AudioService
 from .config import Settings
 from .database import Database, utc_now
@@ -132,6 +133,9 @@ class Pipeline:
 
             ai = self._ai()
             previous_context = ""
+            previous_style: dict | None = None
+            persona = (project.get("narrator_profile") or {}).get("persona")
+            speed = config.get("speed", self.config.tts_speed)
             for position, segment_id in enumerate(segment_ids):
                 base_progress = 10 + round(80 * position / max(len(segment_ids), 1))
                 segment = self.db.one("SELECT * FROM segments WHERE id=?", (segment_id,))
@@ -157,7 +161,7 @@ class Pipeline:
 
                 adaptation = self._tracked_call(
                     job_id, segment_id, "adaptation", config["text_model"], faithful.english_faithful,
-                    lambda: ai.adapt(faithful.english_faithful, config["text_model"], project["narrator_profile"]),
+                    lambda: ai.adapt(faithful.english_faithful, config["text_model"], project["narrator_profile"] or {}, previous_context[-600:]),
                 )
                 style = adaptation.model_dump(exclude={"narration_text"})
                 self.db.execute(
@@ -165,10 +169,13 @@ class Pipeline:
                     (adaptation.narration_text, json.dumps(style), utc_now(), segment_id),
                 )
 
-                tts_path = project_dir / "generated" / job_id / f"{position + 1:04d}_r01.mp3"
+                tts_path = project_dir / "generated" / job_id / f"{position + 1:04d}_r01.wav"
                 self._tracked_call(
                     job_id, segment_id, "tts", config["tts_model"], adaptation.narration_text,
-                    lambda: ai.synthesize(adaptation.narration_text, config["tts_model"], config["voice"], style, tts_path, profile),
+                    lambda: ai.synthesize(
+                        adaptation.narration_text, config["tts_model"], config["voice"], style, tts_path,
+                        profile, previous_style, persona, speed,
+                    ),
                 )
                 tts_duration = self.audio.probe(tts_path).duration_ms
                 self.db.execute(
@@ -193,6 +200,7 @@ class Pipeline:
                     (json.dumps(qa_payload), qa_status, qa_status, utc_now(), segment_id),
                 )
                 previous_context = adaptation.narration_text
+                previous_style = style
 
             failed = self.db.one("SELECT COUNT(*) AS count FROM segments WHERE job_id=? AND qa_status!='passed'", (job_id,))["count"]
             if config.get("human_review_gate", True) or failed:
@@ -215,6 +223,14 @@ class Pipeline:
         assert job and project
         ai = self._ai()
         config = job["config"]
+        predecessor = self.db.one(
+            "SELECT narration_en, style_json FROM segments WHERE job_id=? AND segment_index=?",
+            (job["id"], segment["segment_index"] - 1),
+        )
+        previous_narration = predecessor["narration_en"] if predecessor else ""
+        previous_style = predecessor["style"] if predecessor else None
+        persona = (project.get("narrator_profile") or {}).get("persona")
+        speed = config.get("speed", self.config.tts_speed)
         try:
             faithful_text = segment["faithful_en"]
             narration_text = segment["narration_en"]
@@ -233,7 +249,7 @@ class Pipeline:
             if stage == "adaptation":
                 adaptation = self._tracked_call(
                     job["id"], segment_id, "adaptation", config["text_model"], faithful_text,
-                    lambda: ai.adapt(faithful_text, config["text_model"], project["narrator_profile"]),
+                    lambda: ai.adapt(faithful_text, config["text_model"], project["narrator_profile"] or {}, previous_narration[-600:]),
                 )
                 narration_text = adaptation.narration_text
                 style = adaptation.model_dump(exclude={"narration_text"})
@@ -244,10 +260,13 @@ class Pipeline:
                 stage = "tts"
             if stage == "tts":
                 revision = segment["revision"] + 1
-                tts_path = self.config.data_dir / "projects" / project["id"] / "generated" / job["id"] / f"{segment['segment_index']:04d}_r{revision:02d}.mp3"
+                tts_path = self.config.data_dir / "projects" / project["id"] / "generated" / job["id"] / f"{segment['segment_index']:04d}_r{revision:02d}.wav"
                 self._tracked_call(
                     job["id"], segment_id, "tts", config["tts_model"], narration_text,
-                    lambda: ai.synthesize(narration_text, config["tts_model"], config["voice"], style, tts_path, project.get("speaking_profile")),
+                    lambda: ai.synthesize(
+                        narration_text, config["tts_model"], config["voice"], style, tts_path,
+                        project.get("speaking_profile"), previous_style, persona, speed,
+                    ),
                 )
                 duration = self.audio.probe(tts_path).duration_ms
                 self.db.execute(
@@ -291,7 +310,13 @@ class Pipeline:
         export_dir = self.config.data_dir / "projects" / project_id / "exports"
         wav_path = export_dir / "final_en.wav"
         mp3_path = export_dir / "final_en.mp3"
-        self.audio.assemble([Path(s["tts_audio_path"]) for s in segments], wav_path, mp3_path)
+        project = self.db.one("SELECT speaking_profile_json FROM projects WHERE id=?", (project_id,))
+        profile = project.get("speaking_profile") if project else None
+        gaps = [
+            segment_gap_ms(earlier.get("style"), later.get("style"), profile)
+            for earlier, later in zip(segments, segments[1:])
+        ]
+        self.audio.assemble([Path(s["tts_audio_path"]) for s in segments], wav_path, mp3_path, gaps)
         (export_dir / "transcript_si.json").write_text(
             json.dumps([{"index": s["segment_index"], "start_ms": s["start_ms"], "end_ms": s["end_ms"], "text": s["transcript_si"]} for s in segments], ensure_ascii=False, indent=2),
             encoding="utf-8",

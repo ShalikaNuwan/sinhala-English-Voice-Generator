@@ -19,12 +19,15 @@ class FakeAI:
         return FaithfulTranslation(english_faithful="This is a test.")
 
     def adapt(self, *_args, **_kwargs):
-        return NarrationAdaptation(narration_text="This is a test.")
+        return NarrationAdaptation(
+            narration_text="This is a test.", beat="reveal", emotion="tense", pause_after_ms=800,
+        )
 
     def describe_delivery(self, _audio_path, _model):
         return "Steady, moderate energy with a factual tone."
 
-    def synthesize(self, _text, _model, _voice, _style, output_path: Path, _profile=None):
+    def synthesize(self, _text, _model, _voice, _style, output_path: Path, profile=None,
+                   previous_style=None, persona=None, speed=1.0):
         output_path.parent.mkdir(parents=True, exist_ok=True)
         subprocess.run(
             ["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=1", str(output_path)],
@@ -35,9 +38,9 @@ class FakeAI:
         return QAEvaluation(passed=True)
 
 
-def create_source(path: Path) -> None:
+def create_source(path: Path, seconds: float = 1.0) -> None:
     subprocess.run(
-        ["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=330:duration=1", str(path)],
+        ["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", f"sine=frequency=330:duration={seconds}", str(path)],
         check=True,
     )
 
@@ -94,6 +97,8 @@ class ProfilingFakeAI(FakeAI):
         self.describe_calls = 0
         self.describe_error = describe_error
         self.synthesis_profiles: list[dict | None] = []
+        self.synthesis_calls: list[dict] = []
+        self.adapt_calls: list[dict] = []
 
     def describe_delivery(self, _audio_path, _model):
         self.describe_calls += 1
@@ -101,12 +106,21 @@ class ProfilingFakeAI(FakeAI):
             raise self.describe_error
         return "Steady, moderate energy with a factual tone."
 
-    def synthesize(self, text, model, voice, style, output_path, profile=None):
+    def adapt(self, faithful_en, model, narrator_profile, previous_narration=""):
+        self.adapt_calls.append({"faithful": faithful_en, "previous_narration": previous_narration})
+        return super().adapt(faithful_en, model, narrator_profile, previous_narration)
+
+    def synthesize(self, text, model, voice, style, output_path, profile=None,
+                   previous_style=None, persona=None, speed=1.0):
         self.synthesis_profiles.append(profile)
-        super().synthesize(text, model, voice, style, output_path, profile)
+        self.synthesis_calls.append({
+            "text": text, "voice": voice, "style": style, "output_path": output_path,
+            "previous_style": previous_style, "persona": persona, "speed": speed,
+        })
+        super().synthesize(text, model, voice, style, output_path, profile, previous_style, persona, speed)
 
 
-def build_project(tmp_path, ai):
+def build_project(tmp_path, ai, seconds: float = 1.0, narrator_profile: dict | None = None):
     data_dir = tmp_path / "data"
     config = Settings(data_dir=data_dir, database_path=data_dir / "app.db", openai_api_key="not-used")
     db = Database(config.database_path)
@@ -114,12 +128,12 @@ def build_project(tmp_path, ai):
     project_id = str(uuid.uuid4())
     source = data_dir / "projects" / project_id / "original" / "source.wav"
     source.parent.mkdir(parents=True)
-    create_source(source)
+    create_source(source, seconds)
     now = utc_now()
     db.execute(
         "INSERT INTO projects(id,title,topic,glossary_json,narrator_profile_json,status,source_path,created_at,updated_at) "
         "VALUES(?,?,?,?,?,?,?,?,?)",
-        (project_id, "Test", "History", "{}", "{}", "uploaded", str(source), now, now),
+        (project_id, "Test", "History", "{}", json.dumps(narrator_profile or {}), "uploaded", str(source), now, now),
     )
     pipeline = Pipeline(db, config)
     pipeline._ai = lambda: ai
@@ -131,6 +145,7 @@ def start_job(db, project_id):
     job_config = {
         "stt_model": "fake-stt", "text_model": "fake-text", "qa_model": "fake-qa",
         "tts_model": "fake-tts", "audio_model": "fake-audio", "voice": "onyx",
+        "speed": 0.95,
         "human_review_gate": True,
     }
     db.execute(
@@ -183,3 +198,84 @@ def test_job_completes_when_the_tone_analysis_fails(tmp_path):
     profile = db.one("SELECT * FROM projects WHERE id=?", (project_id,))["speaking_profile"]
     assert profile["described"] is None
     assert profile["measured"]["duration_s"] > 0
+
+
+def test_each_segment_is_voiced_with_the_previous_segments_style(tmp_path):
+    ai = ProfilingFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai, seconds=65)
+
+    pipeline.process_job(start_job(db, project_id))
+
+    assert len(ai.synthesis_calls) == 2
+    assert ai.synthesis_calls[0]["previous_style"] is None
+    assert ai.synthesis_calls[1]["previous_style"]["beat"] == "reveal"
+    assert ai.synthesis_calls[1]["previous_style"]["emotion"] == "tense"
+
+
+def test_adaptation_sees_the_previous_narration(tmp_path):
+    ai = ProfilingFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai, seconds=65)
+
+    pipeline.process_job(start_job(db, project_id))
+
+    assert ai.adapt_calls[0]["previous_narration"] == ""
+    assert ai.adapt_calls[1]["previous_narration"] == "This is a test."
+
+
+def test_synthesis_receives_the_job_speed_and_the_project_persona(tmp_path):
+    ai = ProfilingFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai, narrator_profile={"persona": "You are a calm lecturer."})
+
+    pipeline.process_job(start_job(db, project_id))
+
+    assert ai.synthesis_calls[0]["speed"] == 0.95
+    assert ai.synthesis_calls[0]["persona"] == "You are a calm lecturer."
+
+
+def test_generated_segments_are_wav_files(tmp_path):
+    ai = ProfilingFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai)
+
+    pipeline.process_job(start_job(db, project_id))
+
+    segment = db.one("SELECT * FROM segments WHERE project_id=?", (project_id,))
+    assert segment["tts_audio_path"].endswith("0001_r01.wav")
+    assert Path(segment["tts_audio_path"]).exists()
+
+
+def test_regenerating_a_segment_uses_its_predecessors_style(tmp_path):
+    ai = ProfilingFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai, seconds=65)
+    pipeline.process_job(start_job(db, project_id))
+    second = db.one("SELECT * FROM segments WHERE project_id=? AND segment_index=2", (project_id,))
+    first = db.one("SELECT * FROM segments WHERE project_id=? AND segment_index=1", (project_id,))
+
+    pipeline.regenerate_segment(second["id"], "tts")
+
+    call = ai.synthesis_calls[-1]
+    assert call["previous_style"] == first["style"]
+    assert str(call["output_path"]).endswith("0002_r02.wav")
+
+
+def test_regenerating_the_first_segment_has_no_predecessor(tmp_path):
+    ai = ProfilingFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai)
+    pipeline.process_job(start_job(db, project_id))
+    first = db.one("SELECT * FROM segments WHERE project_id=?", (project_id,))
+
+    pipeline.regenerate_segment(first["id"], "tts")
+
+    assert ai.synthesis_calls[-1]["previous_style"] is None
+
+
+def test_assembly_leaves_the_adaptations_pause_between_segments(tmp_path):
+    ai = ProfilingFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai, seconds=65)
+    job_id = start_job(db, project_id)
+    pipeline.process_job(job_id)
+
+    artifacts = pipeline.assemble_project(project_id, job_id)
+
+    # Two 1 s fake segments plus the fake adaptation's 800 ms pause_after.
+    duration = pipeline.audio.probe(Path(artifacts["wav"])).duration_ms
+    assert 2650 <= duration <= 2950
