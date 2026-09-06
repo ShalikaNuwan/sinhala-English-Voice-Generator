@@ -71,7 +71,7 @@ Files are limited to 25 MB; the pipeline's 20–60 s chunks at 24 kHz mono are u
 ### `app/recordings.py` (new, pure)
 
 - `has_foreign_script(text) -> bool`: any alphabetic character outside the Latin range (code point
-  0x0250 and above). `is_english(text)`: has a Latin letter and no foreign script.
+  0x0250 and above). Latin-only or empty text is treated as a possible recording.
 - `choose_reference(spans) -> tuple[float, float] | None`: dominant speaker's longest span, trimmed
   to `REFERENCE_MAX_S = 10.0`, `None` if under `REFERENCE_MIN_S = 2.0`.
 - `original_spans(spans, chunk_ms) -> list[tuple[int, int]]`: the rule in step 2 above, in ms
