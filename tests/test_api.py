@@ -141,9 +141,9 @@ def seed_job_with_segments(module, kinds):
         segment_id = str(uuid.uuid4())
         ids.append(segment_id)
         module.db.execute(
-            "INSERT INTO segments(id,job_id,project_id,segment_index,start_ms,end_ms,source_audio_path,kind,qa_json,qa_status,status,updated_at) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-            (segment_id, job_id, project_id, index, 0, 1000, "x.wav", kind,
+            "INSERT INTO segments(id,job_id,project_id,segment_index,start_ms,end_ms,source_audio_path,tts_audio_path,kind,qa_json,qa_status,status,updated_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (segment_id, job_id, project_id, index, 0, 1000, "x.wav", "x_tts.wav", kind,
              json.dumps({"passed": False, "issues": ["Recorded audio kept as is. Confirm."]}) if kind == "original" else "{}",
              "needs_review" if kind == "original" else "passed", "kept" if kind == "original" else "passed", now),
         )
