@@ -39,15 +39,21 @@ Files are limited to 25 MB; the pipeline's 20–60 s chunks at 24 kHz mono are u
    `original/narrator_reference.wav` and recorded in the project's speaking profile JSON as
    `narrator_reference`. If no span reaches 2 s, detection is disabled for the job with a warning.
 2. **Per chunk.** After the existing silence-based split, each chunk file is diarized with the
-   narrator reference. A span is an *original* span when its speaker is not `narrator` **and** its
-   text contains no Sinhala script. Requiring both protects against a failed reference match (every
-   span would then be "other", but Sinhala text keeps it narration). Adjacent original spans less
-   than 1 s apart merge; spans under 1.5 s are ignored; each remaining span is padded 150 ms into
-   the surrounding silence, clamped to the chunk.
-3. **Re-cut.** The chunk becomes an ordered list of pieces, each `narration` or `original`.
-   Narration slivers under 800 ms between originals are absorbed into the neighbouring original.
-   A chunk with no original spans stays as it is, one narration segment, using the existing chunk
-   file.
+   narrator reference. Spans whose text contains letters from a non-Latin script are the narrator
+   speaking (the diarizer renders Sinhala in Sinhala or, occasionally, Devanagari script). A
+   recording opens at a span that is Latin-only or empty **and** not labelled `narrator`, and stays
+   open across every following span, including silences of several seconds and short Latin-only
+   spans mislabelled as narrator, until a non-Latin span closes it or a gap exceeds 10 s. Requiring
+   the script test protects against a failed reference match. Recordings under 1.5 s are ignored;
+   each remaining one is padded 150 ms into the surrounding silence, clamped to the chunk. (A paid
+   probe on the Gilgo Beach 911-call chunk shaped this rule: the call has 3–4.5 s silences between
+   dispatcher lines and one "Okay." mislabelled as narrator.)
+3. **Re-cut.** The chunk becomes an ordered list of pieces, each `narration` or `original`. A
+   narration piece is kept only if it overlaps a span of narrator speech; a piece with no narrator
+   speech (leading or trailing silence, a call's own pause) is absorbed into the neighbouring
+   recording. A chunk with no recordings stays as it is, one narration segment, using the existing
+   chunk file. A recording that runs across a chunk boundary becomes two adjacent original
+   segments; that is accepted for this version.
 
 ## Data model
 
@@ -64,13 +70,16 @@ Files are limited to 25 MB; the pipeline's 20–60 s chunks at 24 kHz mono are u
 
 ### `app/recordings.py` (new, pure)
 
-- `is_sinhala(text) -> bool`: any character in U+0D80–U+0DFF.
+- `has_foreign_script(text) -> bool`: any alphabetic character outside the Latin range (code point
+  0x0250 and above). `is_english(text)`: has a Latin letter and no foreign script.
 - `choose_reference(spans) -> tuple[float, float] | None`: dominant speaker's longest span, trimmed
   to `REFERENCE_MAX_S = 10.0`, `None` if under `REFERENCE_MIN_S = 2.0`.
 - `original_spans(spans, chunk_ms) -> list[tuple[int, int]]`: the rule in step 2 above, in ms
-  relative to the chunk. Constants `MERGE_GAP_MS = 1000`, `MIN_SPAN_MS = 1500`, `PAD_MS = 150`.
-- `cut_plan(chunk_start_ms, chunk_end_ms, originals) -> list[Piece]` where
-  `Piece = (start_ms, end_ms, kind)` in absolute source time; applies `MIN_NARRATION_MS = 800`.
+  relative to the chunk. Constants `MAX_INTERNAL_GAP_MS = 10000`, `MIN_SPAN_MS = 1500`,
+  `PAD_MS = 150`.
+- `narration_spans(spans) -> list[tuple[int, int]]`: spans with foreign script, in ms.
+- `cut_plan(chunk_start_ms, chunk_end_ms, originals, narration) -> list[Piece]` where
+  `Piece = (start_ms, end_ms, kind)` in absolute source time; the rule in step 3 above.
 - `english_run(text, minimum_words=8) -> bool`: true when the text contains a run of at least
   `minimum_words` consecutive Latin-script words. Used as the safety net.
 - `clip_text(spans, start_ms, end_ms) -> str`: the diarized text inside a span, for `transcript_si`.
@@ -151,10 +160,12 @@ Files are limited to 25 MB; the pipeline's 20–60 s chunks at 24 kHz mono are u
 
 Unit tests, no paid calls:
 
-- `tests/test_recordings.py`: `is_sinhala`, `choose_reference` (dominant speaker, trim to 10 s, under
-  2 s → None), `original_spans` (non-narrator English kept, Sinhala text excluded, merge within 1 s,
-  drop under 1.5 s, pad and clamp), `cut_plan` (leading/trailing narration, absorbed slivers, whole
-  chunk original, no originals), `english_run`, `clip_text`.
+- `tests/test_recordings.py`: `has_foreign_script`/`is_english` (Sinhala, Devanagari, Latin, empty),
+  `choose_reference` (dominant speaker, trim to 10 s, under 2 s → None), `original_spans` on the real
+  probe spans from the Gilgo chunk (one recording 13.75–36.64 s), plus: Sinhala span closes a
+  recording, mislabelled Latin "Okay." inside stays inside, gap over 10 s splits, under 1.5 s dropped,
+  pad and clamp; `cut_plan` (leading/trailing silence absorbed, narration kept only when it overlaps
+  narrator speech, whole chunk original, no originals); `english_run`; `clip_text`.
 - `tests/test_ai.py`: `diarize` sends the model, `diarized_json`, `chunking_strategy`, the
   narrator name, and a `data:audio/wav;base64,` reference; omits reference fields when none.
 - `tests/test_audio.py`: `extract` and `extract_levelled` durations and mono 24 kHz output.
