@@ -44,7 +44,7 @@ _NON_ALNUM = re.compile(r"[^0-9a-z]+")
 _CLOSERS = "\"'”’)]"
 _BREAK_ORDER = ["clause", "dash", "sentence", "paragraph", "beat"]
 
-_ABBREVIATIONS = {"mr", "mrs", "ms", "dr", "st", "jr", "sr", "vs", "etc", "eg", "ie", "am", "pm", "no"}
+_ABBREVIATIONS = {"mr", "mrs", "ms", "dr", "st", "jr", "sr", "vs", "etc", "eg", "ie"}  # a.m., U.S. match _DOTTED
 _DOTTED = re.compile(r"^(?:[A-Za-z]\.)+$")  # a.m., U.S., J.
 
 

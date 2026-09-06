@@ -256,3 +256,8 @@ def test_shape_refuses_when_nothing_lines_up(tmp_path):
 def test_duration_failure_is_loud(tmp_path):
     with pytest.raises(RuntimeError):
         pauses._duration_s(tmp_path / "missing.wav")
+
+
+def test_a_one_word_sentence_like_no_still_breaks():
+    assert dict(pauses.script_tokens("No. She never called.")) == {"no": "sentence", "she": "none", "never": "none", "called": "sentence"}
+    assert dict(pauses.script_tokens("At 4 a.m. she called."))["am"] == "none"
