@@ -25,9 +25,6 @@ def test_script_test_separates_narrator_speech_from_english():
     assert recordings.has_foreign_script("Rex Heuermann " + SINHALA)
     assert not recordings.has_foreign_script("Hello? Do you need the police?")
     assert not recordings.has_foreign_script("")
-    assert recordings.is_english("Hello? Do you need the police?")
-    assert not recordings.is_english(SINHALA)
-    assert not recordings.is_english("")
 
 
 def test_reference_is_the_dominant_speakers_longest_span_trimmed_to_ten_seconds():
@@ -133,10 +130,12 @@ def test_cut_plan_can_be_entirely_a_recording():
 
 
 def test_clip_text_collects_what_is_said_in_the_recording():
-    text = recordings.clip_text(CHUNK2_SPANS, 13750, 36640)
+    (start, end), = recordings.original_spans(CHUNK2_SPANS, CHUNK2_MS)
+    text = recordings.clip_text(CHUNK2_SPANS, start, end)
 
     assert text.startswith("Hi, how can I assist you? Hello? Hello?")
     assert text.endswith("Do you need the police? Where?")
+    assert "Okay." in text
     assert "නිව්" not in text
 
 
@@ -149,3 +148,34 @@ def test_english_run_flags_a_recording_left_in_a_transcript():
 def test_english_run_ignores_names_and_short_phrases_inside_narration():
     assert not recordings.english_run(SINHALA + " Rex Heuermann " + SINHALA + " Gilgo Beach Killer " + SINHALA)
     assert not recordings.english_run("")
+
+
+def test_a_long_gap_followed_by_the_narrator_closes_cleanly():
+    spans = [span("A", 0, 3, "Hello?"), span(recordings.NARRATOR, 14, 20, SINHALA)]
+
+    assert recordings.original_spans(spans, 20000) == [(0, 3150)]
+
+
+def test_inverted_spans_do_not_poison_a_recording():
+    spans = [span("A", 8, 5, "Hello?"), span("A", 9, 12, "Do you need the police?")]
+
+    assert recordings.original_spans(spans, 15000) == [(7850, 12150)]
+
+
+def test_cut_plan_keeps_nested_originals_whole():
+    plan = recordings.cut_plan(0, 30000, [(0, 20000), (5000, 10000)], [(20000, 30000)])
+
+    assert plan == [(0, 20000, "original"), (20000, 30000, "narration")]
+
+
+def test_cut_plan_with_two_separated_recordings():
+    plan = recordings.cut_plan(0, 30000, [(5000, 10000), (20000, 25000)], [(0, 5000), (10000, 20000), (25000, 30000)])
+
+    assert plan == [
+        (0, 5000, "narration"), (5000, 10000, "original"), (10000, 20000, "narration"),
+        (20000, 25000, "original"), (25000, 30000, "narration"),
+    ]
+
+
+def test_english_run_fires_on_an_all_english_transcript():
+    assert recordings.english_run("Where? Tell me. Where on Long Island are you? I don't know.")

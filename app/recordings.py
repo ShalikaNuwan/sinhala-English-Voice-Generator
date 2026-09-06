@@ -35,11 +35,7 @@ def has_foreign_script(text: str) -> bool:
     return any(ch.isalpha() and ord(ch) >= 0x0250 for ch in text or "")
 
 
-def is_english(text: str) -> bool:
-    return bool(_LATIN_WORD.search(text or "")) and not has_foreign_script(text)
-
-
-def _ms(seconds) -> int:
+def _ms(seconds: float) -> int:
     return round(float(seconds) * 1000)
 
 
@@ -47,12 +43,13 @@ def choose_reference(spans: list[dict]) -> tuple[float, float] | None:
     """The dominant speaker's longest span, trimmed to what the API accepts as a reference."""
     totals: dict[str, float] = {}
     for item in spans:
-        totals[item["speaker"]] = totals.get(item["speaker"], 0.0) + max(0.0, float(item["end"]) - float(item["start"]))
+        speaker = item.get("speaker") or "?"
+        totals[speaker] = totals.get(speaker, 0.0) + max(0.0, float(item["end"]) - float(item["start"]))
     if not totals:
         return None
     dominant = max(totals, key=totals.get)
     longest = max(
-        (item for item in spans if item["speaker"] == dominant),
+        (item for item in spans if (item.get("speaker") or "?") == dominant),
         key=lambda item: float(item["end"]) - float(item["start"]),
     )
     start, end = float(longest["start"]), float(longest["end"])
@@ -74,8 +71,9 @@ def original_spans(spans: list[dict], chunk_ms: int) -> list[tuple[int, int]]:
     """Embedded recordings in ms relative to the chunk.
 
     A recording opens at a Latin-only or empty span by someone other than the narrator and stays
-    open across silences and short mislabelled spans until the narrator speaks or the gap is
-    implausible.
+    open across silences and across any Latin-only spans, however they are labelled, until the
+    narrator speaks (non-Latin letters) or the gap exceeds MAX_INTERNAL_GAP_MS. The review gate is
+    the guard against a diarizer that writes Sinhala in Latin letters.
     """
     found: list[list[int]] = []
     current: list[int] | None = None
@@ -88,6 +86,7 @@ def original_spans(spans: list[dict], chunk_ms: int) -> list[tuple[int, int]]:
 
     for item in sorted(spans, key=lambda item: float(item["start"])):
         start, end = _ms(item["start"]), _ms(item["end"])
+        end = max(start, end)
         if has_foreign_script(item.get("text") or ""):
             close()
             continue
@@ -115,7 +114,8 @@ def cut_plan(
     """Split a chunk into ordered narration and original pieces, in absolute source time.
 
     Narration pieces survive only where the narrator is heard; silence next to a recording belongs
-    to the recording.
+    to the recording. Chunk bounds are absolute source ms; `originals` and `narration` are
+    chunk-relative ms; the result is absolute.
     """
     length = chunk_end_ms - chunk_start_ms
     if not originals:
@@ -133,7 +133,7 @@ def cut_plan(
         if start > cursor:
             pieces.append([cursor, start, "narration"])
         pieces.append([start, end, "original"])
-        cursor = end
+        cursor = max(cursor, end)
     if cursor < length:
         pieces.append([cursor, length, "narration"])
 
@@ -141,11 +141,11 @@ def cut_plan(
     for start, end, kind in pieces:
         if kind == "narration" and not has_narration(start, end):
             if merged and merged[-1][2] == "original":
-                merged[-1][1] = end  # trailing silence joins the recording before it
+                merged[-1][1] = max(merged[-1][1], end)  # trailing silence joins the recording before it
                 continue
             kind = "original"  # leading silence joins the recording after it
         if kind == "original" and merged and merged[-1][2] == "original":
-            merged[-1][1] = end
+            merged[-1][1] = max(merged[-1][1], end)
             continue
         merged.append([start, end, kind])
     return [(chunk_start_ms + s, chunk_start_ms + e, k) for s, e, k in merged]
