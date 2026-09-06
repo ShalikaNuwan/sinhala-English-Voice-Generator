@@ -159,12 +159,11 @@ def classify(
         # Transcriber timestamps drift into the silence from both sides: the word before a pause may
         # be stretched past its start, and the word after may begin early. The word before a pause is
         # therefore the last one that starts before the silence and does not run past its end.
-        preceding = [
-            index for index, item in enumerate(spoken)
-            if float(item.get("start") or 0) < start and float(item.get("end") or 0) <= end + 0.05
-        ]
+        started_before = [index for index, item in enumerate(spoken) if float(item.get("start") or 0) < start]
+        preceding = [index for index in started_before if float(spoken[index].get("end") or 0) <= end + 0.05]
         cls = "unknown"
-        if preceding:
+        # If the nearest word spans the whole pause, an earlier word says nothing about this pause.
+        if preceding and preceding[-1] == started_before[-1]:
             token_index = mapping.get(preceding[-1])
             if token_index is not None:
                 cls = tokens[token_index][1]
