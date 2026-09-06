@@ -33,8 +33,6 @@ UNPUNCTUATED_MAX_MS = 200
 EDGE_SILENCE_MS = 60
 SILENCE_DB = -40
 SILENCE_MIN_S = 0.08
-# A word may end this long after a pause starts and still be the word before it.
-WORD_TOLERANCE_S = 0.15
 # Without word timestamps only clear pauses are matched, in order, to script breaks.
 FALLBACK_MIN_PAUSE_S = 0.25
 # A pause may exceed the longest band by this much before QA complains.
@@ -158,7 +156,13 @@ def classify(
     """Name each pause by the break that follows the last word spoken before it."""
     result = []
     for start, end in pauses:
-        preceding = [index for index, item in enumerate(spoken) if float(item.get("end") or 0) <= start + WORD_TOLERANCE_S]
+        # Transcriber timestamps drift into the silence from both sides: the word before a pause may
+        # be stretched past its start, and the word after may begin early. The word before a pause is
+        # therefore the last one that starts before the silence and does not run past its end.
+        preceding = [
+            index for index, item in enumerate(spoken)
+            if float(item.get("start") or 0) < start and float(item.get("end") or 0) <= end + 0.05
+        ]
         cls = "unknown"
         if preceding:
             token_index = mapping.get(preceding[-1])

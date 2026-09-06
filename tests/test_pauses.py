@@ -261,3 +261,13 @@ def test_duration_failure_is_loud(tmp_path):
 def test_a_one_word_sentence_like_no_still_breaks():
     assert dict(pauses.script_tokens("No. She never called.")) == {"no": "sentence", "she": "none", "never": "none", "called": "sentence"}
     assert dict(pauses.script_tokens("At 4 a.m. she called."))["am"] == "none"
+
+
+def test_classify_survives_timestamp_drift_on_both_sides_of_a_pause():
+    """Seen on a real segment: "me" stretched 300 ms into the silence and "Even" started early."""
+    tokens = pauses.script_tokens("trying to kill me.\n\nEven when the operator asks.")
+    heard = spoken(("trying", 0.0, 0.3), ("to", 0.3, 0.4), ("kill", 0.4, 0.7), ("me", 0.7, 1.2), ("Even", 0.85, 2.3), ("when", 2.3, 2.5))
+
+    classified = pauses.classify([(0.9, 1.9)], heard, pauses.align(tokens, heard), tokens)
+
+    assert classified == [(0.9, 1.9, "paragraph")]

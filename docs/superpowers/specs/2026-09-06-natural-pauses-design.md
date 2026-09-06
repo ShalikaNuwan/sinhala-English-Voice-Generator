@@ -40,9 +40,10 @@ result. The voice model still produces the speech; it no longer decides the sile
    after `—` or `–` (or a token that is only a dash), `beat` after `…` or `...`, `sentence` after `.`
    `!` `?`, `paragraph` when a sentence end is followed by a blank line, otherwise `none`. Spoken
    words are aligned to script tokens with `difflib.SequenceMatcher` over normalised forms
-   (lower-case, alphanumerics only), which tolerates the transcriber writing "1st" as "1". For each
-   pause, the last spoken word ending no later than 150 ms after the pause start names the script
-   token; that token's class is the pause's class. A pause with no preceding word or whose word is
+   (lower-case, alphanumerics only), which tolerates the transcriber writing "1st" as "1". Word
+   timestamps drift into a silence from both sides, so for each pause the word before it is the last
+   spoken word that starts before the silence and does not run past its end; that word's script
+   token names the pause's class. A pause with no preceding word or whose word is
    unmatched is `unknown` and is left at its current length, never shortened. Abbreviations
    (`Mr.`, `a.m.`, initials) are not sentence ends. A word ending in a hyphen is a dash break.
    Shaping refuses (raw audio kept) when fewer than three quarters of the spoken words align.
@@ -86,7 +87,7 @@ breaks; otherwise the raw audio is used unchanged and a job warning names the se
 ### `app/pauses.py` (new)
 
 - Constants: `BANDS`, `PACE_SCALE`, `UNPUNCTUATED_MAX_MS`, `EDGE_SILENCE_MS`, `SILENCE_DB = -40`,
-  `SILENCE_MIN_S = 0.08`, `WORD_TOLERANCE_S = 0.15`.
+  `SILENCE_MIN_S = 0.08`.
 - `script_tokens(script) -> list[tuple[str, str]]`: `(normalised_word, break_class_after)`.
 - `normalise(word) -> str`.
 - `align(tokens, spoken) -> dict[int, int]`: spoken index → script index for matched words.

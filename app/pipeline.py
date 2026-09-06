@@ -234,7 +234,7 @@ class Pipeline:
         return segment_ids
 
     def _qa_verdict(
-        self, qa: QAEvaluation, transcript: str, tts_duration_ms: int | None, segment: dict, shaped: dict | None = None,
+        self, qa: QAEvaluation, transcript: str, tts_duration_ms: int | None, segment: dict, shaped: dict | None = None, revoiced: bool = False,
     ) -> dict:
         """Model QA plus the mechanical checks: duration ratio, an English run that looks like a recording, and pauses."""
         payload = qa.model_dump()
@@ -249,7 +249,8 @@ class Pipeline:
         if recordings.english_run(transcript):
             payload["passed"] = False
             payload["issues"] = payload["issues"] + [ENGLISH_NOTE]
-        shaped = shaped or (segment.get("qa") or {}).get("pauses")
+        if not revoiced:  # a QA-only rerun keeps the stored pause verdict; new audio does not inherit it
+            shaped = shaped or (segment.get("qa") or {}).get("pauses")
         if shaped:
             payload["pauses"] = {key: shaped.get(key) for key in ("method", "pace", "classes", "profile", "unpunctuated_over_cap")}
             for issue in pauses.profile_issues(shaped):
@@ -459,6 +460,7 @@ class Pipeline:
             narration_text = segment["narration_en"]
             style = segment["style"] or {}
             shaped = None
+            revoiced = False
             if stage == "translation":
                 faithful = self._tracked_call(
                     job["id"], segment_id, "translation", config["text_model"], segment["transcript_si"],
@@ -483,6 +485,7 @@ class Pipeline:
                 )
                 stage = "tts"
             if stage == "tts":
+                revoiced = True
                 revision = segment["revision"] + 1
                 stem = f"{segment['segment_index']:04d}_r{revision:02d}"
                 generated = self._generated_dir(project["id"], job["id"])
@@ -506,7 +509,7 @@ class Pipeline:
                 job["id"], segment_id, "qa", config["qa_model"], fresh["faithful_en"] + fresh["narration_en"],
                 lambda: ai.evaluate(fresh["faithful_en"], fresh["narration_en"], config["qa_model"]),
             )
-            qa_payload = self._qa_verdict(qa, fresh["transcript_si"], fresh.get("tts_duration_ms"), fresh, shaped)
+            qa_payload = self._qa_verdict(qa, fresh["transcript_si"], fresh.get("tts_duration_ms"), fresh, shaped, revoiced=revoiced)
             status = "passed" if qa_payload["passed"] else "needs_review"
             self.db.execute(
                 "UPDATE segments SET qa_json=?, qa_status=?, status=?, updated_at=? WHERE id=?",
