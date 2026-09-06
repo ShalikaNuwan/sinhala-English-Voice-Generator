@@ -191,10 +191,12 @@ def test_rebuild_sets_every_gap_to_its_target_and_leaves_speech_alone(tmp_path):
 
     found = pauses.detect_pauses(tmp_path / "out.wav")
     gaps = [round((end - start) * 1000) for start, end in found]
-    assert len(gaps) == 3
-    assert abs(gaps[0] - 250) <= 30 and abs(gaps[1] - 1000) <= 30 and abs(gaps[2] - 60) <= 30
-    runs = [found[0][0], found[1][0] - found[0][1], found[2][0] - found[1][1]]
+    assert len(gaps) == 2  # the 60 ms tail sits below the detection floor by design
+    assert abs(gaps[0] - 250) <= 30 and abs(gaps[1] - 1000) <= 30
+    runs = [found[0][0], found[1][0] - found[0][1]]
     assert all(abs(run - 1.0) < 0.05 for run in runs)
+    # Three 1 s runs plus 250 + 1000 + 60 ms of silence.
+    assert abs(pauses._duration_s(tmp_path / "out.wav") - 4.31) < 0.03
 
 
 def test_profile_and_issues(tmp_path):
@@ -223,9 +225,11 @@ def test_shape_end_to_end_with_word_timestamps(tmp_path):
     gaps = [round((end - start) * 1000) for start, end in found]
     clause_low, clause_high = pauses.BANDS["clause"]
     sentence_low, sentence_high = pauses.BANDS["sentence"]
+    assert len(gaps) == 2
     assert clause_low * 0.85 - 30 <= gaps[0] <= clause_high * 0.85 + 30
     assert sentence_low * 0.85 - 30 <= gaps[1] <= sentence_high * 0.85 + 30
-    assert gaps[2] <= pauses.EDGE_SILENCE_MS + 30
+    assert result["plan"][-1]["target_ms"] <= pauses.EDGE_SILENCE_MS
+    assert abs(pauses._duration_s(tmp_path / "shaped.wav") - (3.0 + (gaps[0] + gaps[1] + result["plan"][-1]["target_ms"]) / 1000)) < 0.05
     assert result["classes"] == {"clause": 1, "sentence": 1, "edge": 1}
     assert result["profile"]["count"] == 2
 
@@ -547,7 +551,7 @@ def shape(
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `.venv/bin/python -m pytest -p no:warnings tests/test_pauses.py`
-Expected: 17 passed. If a gap measured by `detect_pauses` on the rebuilt file is off by more than the 30 ms tolerance, print the measured values and check the `aevalsrc` duration and the `-sample_fmt s16` output before changing anything; the tone bursts are full-scale so silence edges are sharp.
+Expected: 16 passed. If a gap measured by `detect_pauses` on the rebuilt file is off by more than the 30 ms tolerance, print the measured values and check the `aevalsrc` duration and the `-sample_fmt s16` output before changing anything; the tone bursts are full-scale so silence edges are sharp.
 
 - [ ] **Step 5: Commit**
 
