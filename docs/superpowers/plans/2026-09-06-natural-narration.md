@@ -388,6 +388,7 @@ def test_adaptation_defaults_beat_and_delivery_when_the_model_omits_them():
 
     assert adaptation.beat == "build"
     assert adaptation.delivery == ""
+    assert adaptation.pause_after_ms == 0  # 0 means: use the narrator's usual gap at assembly
     style = adaptation.model_dump(exclude={"narration_text"})
     assert set(style) == {"beat", "delivery", "pace", "emphasis", "pause_before_ms", "pause_after_ms", "emotion"}
 ```
@@ -415,8 +416,14 @@ class NarrationAdaptation(BaseModel):
         default_factory=list,
         description="Exact phrases from narration_text to give weight to.",
     )
-    pause_before_ms: int = Field(default=0, ge=0, le=3000)
-    pause_after_ms: int = Field(default=250, ge=0, le=3000)
+    pause_before_ms: int = Field(
+        default=0, ge=0, le=3000,
+        description="Silence before this passage in milliseconds. 0 means use the narrator's usual gap.",
+    )
+    pause_after_ms: int = Field(
+        default=0, ge=0, le=3000,
+        description="Silence after this passage in milliseconds. 0 means use the narrator's usual gap.",
+    )
     emotion: str = Field(default="neutral", description="The emotional tone of this passage, in a few words.")
 ```
 
@@ -572,7 +579,9 @@ Replace the `adapt` method with:
                         "Also return: beat (where this passage sits in the story: setup, build, reveal, "
                         "aftermath, or reflection); delivery (one sentence of direction to the voice actor for "
                         "this passage); emotion; pace; emphasis (exact phrases to weight); and pause_before_ms "
-                        "and pause_after_ms (silence the narrator would leave before and after this passage)."
+                        "and pause_after_ms (silence in milliseconds the narrator would leave before and after this "
+                        "passage; leave both at 0 unless this passage needs a longer or shorter pause than the "
+                        "narrator's usual gap)."
                     ),
                 },
                 {

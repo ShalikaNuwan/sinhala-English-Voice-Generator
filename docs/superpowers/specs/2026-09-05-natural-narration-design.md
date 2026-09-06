@@ -56,7 +56,7 @@ The stage receives the tail of the previous segment's narration (last 600 charac
 | `beat` | `Literal["setup","build","reveal","aftermath","reflection"]`, default `build` | Where this passage sits in the story arc. |
 | `delivery` | `str`, default `""` | One sentence of direction for a voice actor, e.g. "Lower your voice as the call cuts out and let the last line hang." |
 
-`pace`, `emphasis`, `pause_before_ms`, `pause_after_ms`, `emotion` are unchanged.
+`pace`, `emphasis`, `pause_before_ms`, `emotion` are unchanged. `pause_after_ms` now defaults to `0` instead of `250`: zero means "the model did not ask for a specific pause", which lets assembly fall back to the source narrator's measured mean pause. The adaptation prompt says so explicitly. (Found in review: with the old default of 250 every gap would have clamped to the 300 ms floor and the mean-pause fallback would never run.)
 
 ### 2. Voice direction — new module `app/direction.py`
 
@@ -76,7 +76,7 @@ The stage receives the tail of the previous segment's narration (last 600 charac
 
 Missing pieces are omitted, never rendered as `None`. With no profile and no previous style the brief is persona, rules, and this passage.
 
-`speaking_speed(settings) -> float` returns the configured `TTS_SPEED` clamped to the API's 0.25–4.0 range. Pace is driven through the direction text; `TTS_SPEED` defaults to `1.0` and the listening test decides whether a lower value helps or sounds stretched. The value is recorded in the job configuration like the other settings.
+`speaking_speed(requested: float) -> float` returns the given speed clamped to the API's 0.25–4.0 range; the pipeline passes the job's configured `TTS_SPEED`. Pace is driven through the direction text; `TTS_SPEED` defaults to `1.0` and the listening test decides whether a lower value helps or sounds stretched. The value is recorded in the job configuration like the other settings.
 
 ### 3. Synthesis — `AIClient.synthesize()`
 
