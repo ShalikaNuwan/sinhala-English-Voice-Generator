@@ -83,7 +83,7 @@ function segmentCard(segment) {
       <p class="muted">${escapeHtml(segment.transcript_si || "(no speech recognised in this recording)")}</p>
       ${player}
       <div class="actions">
-        <button class="confirm">Confirm recording</button>
+        ${segment.tts_audio_url ? '<button class="confirm">Confirm recording</button>' : '<button class="regen secondary">Cut the recording again</button>'}
         <button class="to-narration secondary">Treat as narration</button>
         ${issues}
       </div>
@@ -122,16 +122,17 @@ async function loadSegments() {
       await request(`/api/segments/${id}/regenerate`, jsonOptions("POST", {stage:"tts"}));
       card.querySelector(".regen").textContent = "Regenerating…"; later(2500);
     });
-    card.querySelector(".to-original")?.addEventListener("click", async () => {
+    const guarded = (action) => async () => { try { await action(); } catch (error) { alert(error.message); } };
+    card.querySelector(".to-original")?.addEventListener("click", guarded(async () => {
       await request(`/api/segments/${id}/kind`, jsonOptions("PATCH", {kind:"original"})); later(1500);
-    });
-    card.querySelector(".to-narration")?.addEventListener("click", async () => {
+    }));
+    card.querySelector(".to-narration")?.addEventListener("click", guarded(async () => {
       await request(`/api/segments/${id}/kind`, jsonOptions("PATCH", {kind:"narration"}));
       card.querySelector(".to-narration").textContent = "Voicing…"; later(4000);
-    });
-    card.querySelector(".confirm")?.addEventListener("click", async () => {
+    }));
+    card.querySelector(".confirm")?.addEventListener("click", guarded(async () => {
       await request(`/api/segments/${id}/confirm`, {method:"POST"}); await loadSegments();
-    });
+    }));
   });
 }
 

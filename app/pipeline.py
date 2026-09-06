@@ -196,6 +196,9 @@ class Pipeline:
                         job_id, None, "diarization", model, str(chunk_path),
                         lambda: ai.diarize(chunk_path, model, reference),
                     )
+                    # The chunk file starts CHUNK_PAD_MS before the planned chunk; diarizer times are file-relative.
+                    lead_s = self.audio.chunk_lead_ms(chunk_start) / 1000
+                    spans = [dict(item, start=float(item["start"]) - lead_s, end=float(item["end"]) - lead_s) for item in spans]
                     originals = recordings.original_spans(spans, chunk_end - chunk_start)
                     pieces = recordings.cut_plan(chunk_start, chunk_end, originals, recordings.narration_spans(spans))
                 except Exception as exc:  # noqa: BLE001 - one chunk's detection must not fail the job

@@ -19,6 +19,10 @@ class AudioInfo:
     channels: int
 
 
+# Chunks are cut with this much of their neighbours on each side so a boundary never clips a word.
+CHUNK_PAD_MS = 200
+
+
 class AudioService:
     def __init__(self, ffmpeg: str = "ffmpeg", ffprobe: str = "ffprobe"):
         self.ffmpeg = ffmpeg
@@ -101,7 +105,7 @@ class AudioService:
             segments.append((start, duration_ms))
         return segments
 
-    def extract(self, source: Path, start_ms: int, end_ms: int, destination: Path, pad_ms: int = 200) -> AudioInfo:
+    def extract(self, source: Path, start_ms: int, end_ms: int, destination: Path, pad_ms: int = CHUNK_PAD_MS) -> AudioInfo:
         """Cut [start_ms, end_ms] from the source as mono 24 kHz, padded into the neighbours except at the edges."""
         info = self.probe(source)
         begin = max(0, start_ms - (pad_ms if start_ms else 0))
@@ -156,6 +160,11 @@ class AudioService:
             "-af", ",".join(filters), str(destination),
         ])
         return self.probe(destination)
+
+    @staticmethod
+    def chunk_lead_ms(start_ms: int) -> int:
+        """How far before its planned start a chunk file from `split` actually begins."""
+        return CHUNK_PAD_MS if start_ms else 0
 
     def split(self, source: Path, destination_dir: Path) -> list[tuple[int, int, Path]]:
         info = self.probe(source)

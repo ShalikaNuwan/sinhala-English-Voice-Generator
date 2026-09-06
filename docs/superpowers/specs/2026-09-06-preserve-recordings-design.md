@@ -142,8 +142,9 @@ Files are limited to 25 MB; the pipeline's 20–60 s chunks at 24 kHz mono are u
   `narration`, clear the pass-through fields and run `_narrate_segment` with context from the
   previous narration segment. Runs as a background task from the endpoint.
 - `confirm_segment(segment_id)`: `qa_status = passed`, `status = kept` for originals; 409 otherwise.
-- `assemble_project`: the gap next to an original segment on either side is `MIN_GAP_MS`;
-  narration-to-narration gaps use `segment_gap_ms` as today.
+- `assemble_project`: the gap next to an original segment on either side is `MIN_GAP_MS`, except
+  that two originals meeting exactly at a chunk boundary (one recording split by the chunker) are
+  joined with no gap; narration-to-narration gaps use `segment_gap_ms` as today.
 
 ### Web UI (`app/static/app.js`, `index.html`, `style.css`)
 
@@ -167,7 +168,7 @@ Files are limited to 25 MB; the pipeline's 20–60 s chunks at 24 kHz mono are u
 
 Unit tests, no paid calls:
 
-- `tests/test_recordings.py`: `has_foreign_script`/`is_english` (Sinhala, Devanagari, Latin, empty),
+- `tests/test_recordings.py`: `has_foreign_script` (Sinhala, Devanagari, Latin, empty),
   `choose_reference` (dominant speaker, trim to 10 s, under 2 s → None), `original_spans` on the real
   probe spans from the Gilgo chunk (one recording 13.75–36.64 s), plus: Sinhala span closes a
   recording, mislabelled Latin "Okay." inside stays inside, gap over 10 s splits, under 1.5 s dropped,

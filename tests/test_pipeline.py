@@ -162,7 +162,7 @@ class RecordingFakeAI(ProfilingFakeAI):
                 {"speaker": "A", "start": 27.0, "end": 30.0, "text": "Do you need the police?"},
                 {"speaker": "narrator", "start": 30.0, "end": 45.0, "text": SINHALA},
             ]
-        return [{"speaker": "narrator", "start": 0.0, "end": 20.0, "text": SINHALA}]
+        return [{"speaker": "narrator", "start": 0.2, "end": 20.2, "text": SINHALA}]
 
 
 class BoundaryFakeAI(RecordingFakeAI):
@@ -177,9 +177,10 @@ class BoundaryFakeAI(RecordingFakeAI):
                 {"speaker": "narrator", "start": 0.0, "end": 40.0, "text": SINHALA},
                 {"speaker": "A", "start": 40.0, "end": 45.0, "text": "Hello?"},
             ]
+        # Chunk 2's file begins 200 ms before 45 s, so a recording ending at source 50 s ends at file 5.2 s.
         return [
-            {"speaker": "A", "start": 0.0, "end": 5.0, "text": "Do you need the police?"},
-            {"speaker": "narrator", "start": 5.0, "end": 20.0, "text": SINHALA},
+            {"speaker": "A", "start": 0.0, "end": 5.2, "text": "Do you need the police?"},
+            {"speaker": "narrator", "start": 5.2, "end": 20.2, "text": SINHALA},
         ]
 
 
@@ -652,3 +653,28 @@ def test_a_recording_without_audio_cannot_be_confirmed(tmp_path):
 
     with pytest.raises(RuntimeError, match="no audio"):
         pipeline.confirm_segment(segments[2]["id"])
+
+
+def test_recording_times_on_later_chunks_account_for_the_split_padding(tmp_path):
+    """Chunk files after the first start 200 ms early; diarizer times must be shifted before cutting."""
+
+    class LateChunkFakeAI(RecordingFakeAI):
+        def diarize(self, audio_path, model, reference=None):
+            self.diarize_calls.append({"path": Path(audio_path), "reference": reference})
+            if reference is None:
+                return [{"speaker": "A", "start": 0.0, "end": 9.0, "text": SINHALA}]
+            if Path(audio_path).name == "0001_source.wav":
+                return [{"speaker": "narrator", "start": 0.0, "end": 45.0, "text": SINHALA}]
+            # A recording from source 50 s to 60 s appears at file 5.2-15.2 s in the padded chunk-2 file.
+            return [
+                {"speaker": "narrator", "start": 0.2, "end": 5.2, "text": SINHALA},
+                {"speaker": "A", "start": 5.2, "end": 15.2, "text": CALL},
+                {"speaker": "narrator", "start": 15.2, "end": 20.2, "text": SINHALA},
+            ]
+
+    pipeline, db, project_id, job_id, ai, segments = run_recording_job(tmp_path, LateChunkFakeAI())
+
+    assert [(s["kind"], s["start_ms"], s["end_ms"]) for s in segments] == [
+        ("narration", 0, 45000), ("narration", 45000, 49850), ("original", 49850, 60150), ("narration", 60150, 65000),
+    ]
+    assert segments[2]["transcript_si"] == CALL

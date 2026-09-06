@@ -181,3 +181,16 @@ def test_extract_levelled_leaves_silence_alone(tmp_path):
 
     assert 1900 <= info.duration_ms <= 2100
     assert mean_volume_db(tmp_path / "out" / "silent.wav", 0.1, 1.9) < -60
+
+
+def test_split_pads_every_chunk_but_the_first_at_the_front(tmp_path):
+    audio = AudioService()
+    source = tone(tmp_path / "source.wav", 65.0)
+
+    chunks = audio.split(source, tmp_path / "chunks")
+
+    assert [(start, end) for start, end, _ in chunks] == [(0, 45000), (45000, 65000)]
+    first, second = (audio.probe(path).duration_ms for _, _, path in chunks)
+    assert 45150 <= first <= 45250  # 200 ms of padding after only
+    assert 20150 <= second <= 20250  # 200 ms before, none after (end of file)
+    assert AudioService.chunk_lead_ms(0) == 0 and AudioService.chunk_lead_ms(45000) == 200

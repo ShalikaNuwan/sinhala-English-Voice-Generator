@@ -170,7 +170,7 @@ and given a 5 ms fade at each end; the narration that follows is told what was h
 refer to it. Original segments arrive on the review page as needs review with "Recorded audio kept
 as is. Confirm." Confirm them, or choose "Treat as narration" to voice one. A narration segment can
 be kept with "Keep as recorded". At assembly, the gap next to a recording is the 300 ms minimum. A
-recording that runs across a chunk boundary becomes two adjacent original segments.
+recording that runs across a chunk boundary becomes two adjacent original segments joined with no gap.
 
 If diarization is unavailable the job continues as narration only and says so in the progress line.
 Independently, any narration segment whose transcript contains eight or more consecutive English
