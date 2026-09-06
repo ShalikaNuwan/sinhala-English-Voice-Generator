@@ -66,12 +66,16 @@ def is_narrator_speech(item: dict) -> bool:
     narrator for longer than an aside (short narrator-labelled Latin spans are usually mislabels)."""
     if has_foreign_script(item.get("text") or ""):
         return True
-    return item.get("speaker") == NARRATOR and _ms(item["end"]) - _ms(item["start"]) > MAX_ASIDE_MS
+    return item.get("speaker") == NARRATOR and max(0, _ms(item["end"]) - _ms(item["start"])) > MAX_ASIDE_MS
 
 
 def narration_spans(spans: list[dict]) -> list[tuple[int, int]]:
     """Where the narrator is actually heard, in ms relative to the chunk."""
-    return sorted((_ms(item["start"]), _ms(item["end"])) for item in spans if is_narrator_speech(item))
+    return sorted(
+        (_ms(item["start"]), max(_ms(item["start"]), _ms(item["end"])))
+        for item in spans
+        if is_narrator_speech(item)
+    )
 
 
 def original_spans(spans: list[dict], chunk_ms: int) -> list[tuple[int, int]]:

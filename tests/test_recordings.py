@@ -229,3 +229,7 @@ def test_a_stray_fragment_between_narrator_spans_is_not_a_recording():
     ]
 
     assert recordings.original_spans(spans, 20000) == []
+
+
+def test_inverted_narrator_spans_are_normalised_in_narration_spans():
+    assert recordings.narration_spans([span(recordings.NARRATOR, 8, 5, SINHALA)]) == [(8000, 8000)]
