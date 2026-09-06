@@ -10,14 +10,17 @@ The MVP is deliberately simple. It uses FastAPI, SQLite, local files, FastAPI ba
 
 - WAV, MP3, M4A, MP4, WebM, OGG, and FLAC upload and validation
 - mono 24 kHz normalization and silence-aware 20–60 second segmentation
-- separate Sinhala transcription, faithful translation, and spoken-English adaptation stages
+- separate Sinhala transcription, faithful translation, and spoken-English adaptation stages; the
+  adaptation writes a performance script (short sentences, held beats, spoken dates) and labels each
+  passage with a story beat and a director's note
 - configurable glossary, narrator profile, models, and standard TTS voice
 - speaking-pattern matching: the source narrator's pace, pause habits, and emotional tone are
   measured once per project and used to direct the English narration
 - segment-level model-call audit records with model, prompt version, input hash, and timestamps
 - text fidelity and duration-ratio QA
 - side-by-side transcript/script editing, segment-only regeneration, previews, and job progress
-- final WAV/MP3 plus Sinhala transcript and English script JSON exports
+- lossless WAV segments, assembled with real pauses between passages, exported as final WAV/MP3 plus
+  Sinhala transcript and English script JSON
 - original media preservation and resumable persisted stage outputs
 
 ## Requirements
@@ -56,7 +59,8 @@ All model names are environment variables so deployment is not tied to a changin
 | `TEXT_MODEL` | `gpt-5.6-terra` |
 | `QA_MODEL` | `gpt-5.6-terra` |
 | `TTS_MODEL` | `gpt-4o-mini-tts` |
-| `TTS_VOICE` | `onyx` |
+| `TTS_VOICE` | `cedar` |
+| `TTS_SPEED` | `1.0` |
 | `AUDIO_MODEL` | `gpt-audio` |
 | `DATA_DIR` | `./data` |
 | `MAX_AUDIO_MINUTES` | `120` |
@@ -102,6 +106,41 @@ skew the averages. If the audio model call fails the job continues on the measur
 The profile is computed once and reused, so regenerating a segment keeps the same narration character.
 Thresholds live at the top of `app/speaking_profile.py` and are meant to be tuned once you have listened
 to real output.
+
+## Narration direction
+
+Every TTS call is directed with one brief, built in `app/direction.py` from four parts:
+
+1. **Persona.** A fixed intimate true-crime storyteller: one real person telling one listener about a
+   case that actually happened. A project can replace it by putting a `persona` string in its
+   `narrator_profile` when the project is created. Non-string values are ignored.
+2. **Voice character.** The measured and described speaking profile of the original narrator.
+3. **How to speak.** Rules aimed at the usual synthetic tells: talk rather than read, end statements
+   low, breathe before long sentences, get quieter rather than louder for intensity while staying
+   fully intelligible, say names and dates carefully, report quoted speech rather than act it, sound
+   like someone talking rather than presenting.
+4. **This passage and continuity.** The beat, emotion, director's note, and emphasis from the
+   adaptation stage, plus the beat and emotion the previous passage ended on so the voice does not
+   reset at segment boundaries. Regenerating a segment looks up its predecessor for the same reason.
+
+Pace is driven through the brief. `TTS_SPEED` (or `speed` on the process request) is passed to the
+API and defaults to `1.0`. A request value outside 0.25–4.0 is rejected; an environment value outside
+that range is clamped.
+
+At assembly, the gap between two segments is the adaptation's `pause_after_ms` plus the next
+`pause_before_ms`; when both are zero it falls back to the source narrator's mean pause, and it is
+clamped between 300 ms and the source narrator's longest measured pause.
+
+Segments are generated as WAV so the final mix is only encoded once. WAV segment files are roughly
+ten times larger than the MP3 segments earlier versions produced.
+
+Projects processed before this change keep their old scripts, voice, and pause values. To hear the
+new narration on an existing project, run processing again; regenerating only the TTS stage of a
+segment keeps its old script and old pause values.
+
+`scripts/listening_test.py` voices real segments from an existing job the old way and the new way and
+asks the audio model to say which sounds more human and why. It spends API credit; use it when tuning
+the persona or rules.
 
 ## Production boundaries
 
