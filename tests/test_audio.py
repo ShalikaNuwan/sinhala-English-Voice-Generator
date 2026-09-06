@@ -126,3 +126,42 @@ def test_assembly_joins_a_legacy_mp3_segment_with_a_wav_segment(tmp_path):
     assert info.channels == 1 and info.sample_rate == 24000
     assert 2450 <= info.duration_ms <= 2750
     assert mean_volume_db(wav, 1.05, 1.55) < -60
+
+
+def test_extract_cuts_a_padded_piece_as_mono_24k(tmp_path):
+    audio = AudioService()
+    source = tone(tmp_path / "source.wav", 3.0)
+
+    info = audio.extract(source, 1000, 2000, tmp_path / "out" / "piece.wav")
+
+    assert info.channels == 1 and info.sample_rate == 24000
+    assert 1350 <= info.duration_ms <= 1450  # 1000 ms plus 200 ms of padding on each side
+
+
+def test_extract_does_not_pad_past_the_edges(tmp_path):
+    audio = AudioService()
+    source = tone(tmp_path / "source.wav", 3.0)
+
+    first = audio.extract(source, 0, 1000, tmp_path / "first.wav")
+    last = audio.extract(source, 2000, 3000, tmp_path / "last.wav")
+    exact = audio.extract(source, 1000, 2000, tmp_path / "exact.wav", pad_ms=0)
+
+    assert 1150 <= first.duration_ms <= 1250
+    assert 1150 <= last.duration_ms <= 1250
+    assert 950 <= exact.duration_ms <= 1050
+
+
+def test_extract_levelled_cuts_exactly_and_normalises_loudness(tmp_path):
+    audio = AudioService()
+    source = tmp_path / "quiet.wav"
+    subprocess.run(
+        ["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=4",
+         "-af", "volume=-30dB", "-ar", "24000", "-ac", "1", str(source)],
+        check=True,
+    )
+
+    info = audio.extract_levelled(source, 500, 3500, tmp_path / "out" / "clip.wav")
+
+    assert info.channels == 1 and info.sample_rate == 24000
+    assert 2900 <= info.duration_ms <= 3100
+    assert mean_volume_db(tmp_path / "out" / "clip.wav", 0.5, 2.5) > -25  # lifted from about -33 dB

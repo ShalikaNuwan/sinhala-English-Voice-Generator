@@ -101,6 +101,30 @@ class AudioService:
             segments.append((start, duration_ms))
         return segments
 
+    def extract(self, source: Path, start_ms: int, end_ms: int, destination: Path, pad_ms: int = 200) -> AudioInfo:
+        """Cut [start_ms, end_ms] from the source as mono 24 kHz, padded into the neighbours except at the edges."""
+        info = self.probe(source)
+        begin = max(0, start_ms - (pad_ms if start_ms else 0))
+        finish = min(info.duration_ms, end_ms + (pad_ms if end_ms < info.duration_ms else 0))
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        self._run([
+            self.ffmpeg, "-y", "-v", "error",
+            "-ss", f"{begin / 1000:.3f}", "-to", f"{finish / 1000:.3f}",
+            "-i", str(source), "-ac", "1", "-ar", "24000", str(destination),
+        ])
+        return self.probe(destination)
+
+    def extract_levelled(self, source: Path, start_ms: int, end_ms: int, destination: Path) -> AudioInfo:
+        """Cut a recording out of the source, exactly, and align its loudness with the narration target."""
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        self._run([
+            self.ffmpeg, "-y", "-v", "error",
+            "-ss", f"{start_ms / 1000:.3f}", "-to", f"{end_ms / 1000:.3f}",
+            "-i", str(source), "-ac", "1", "-ar", "24000",
+            "-af", "loudnorm=I=-16:TP=-1.5:LRA=11", str(destination),
+        ])
+        return self.probe(destination)
+
     def split(self, source: Path, destination_dir: Path) -> list[tuple[int, int, Path]]:
         info = self.probe(source)
         plan = self.plan_segments(info.duration_ms, self.silence_boundaries(source))
@@ -108,14 +132,7 @@ class AudioService:
         created: list[tuple[int, int, Path]] = []
         for index, (start_ms, end_ms) in enumerate(plan, start=1):
             output = destination_dir / f"{index:04d}_source.wav"
-            extraction_start = max(0, start_ms - (200 if start_ms else 0))
-            extraction_end = min(info.duration_ms, end_ms + (200 if end_ms < info.duration_ms else 0))
-            self._run([
-                self.ffmpeg, "-y", "-v", "error",
-                "-ss", f"{extraction_start / 1000:.3f}",
-                "-to", f"{extraction_end / 1000:.3f}",
-                "-i", str(source), "-ac", "1", "-ar", "24000", str(output),
-            ])
+            self.extract(source, start_ms, end_ms, output)
             created.append((start_ms, end_ms, output))
         return created
 

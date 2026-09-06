@@ -218,3 +218,54 @@ def test_the_legacy_instruction_builder_is_gone():
     import app.ai
 
     assert not hasattr(app.ai, "narration_instructions")
+
+
+def test_diarize_sends_the_narrator_reference_as_a_data_url(tmp_path):
+    captured = {}
+
+    class Transcriptions:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(segments=[
+                SimpleNamespace(speaker="narrator", start=0.0, end=9.25, text="කතාව", id="s1", type="transcript.text.segment"),
+                SimpleNamespace(speaker="A", start=13.9, end=15.4, text="Hi, how can I assist you?", id="s2", type="transcript.text.segment"),
+            ])
+
+    ai = AIClient.__new__(AIClient)
+    ai.client = SimpleNamespace(audio=SimpleNamespace(transcriptions=Transcriptions()))
+    chunk = tmp_path / "chunk.wav"
+    chunk.write_bytes(b"RIFFchunk")
+    reference = tmp_path / "reference.wav"
+    reference.write_bytes(b"RIFFreference")
+
+    spans = ai.diarize(chunk, "diarize-model", reference)
+
+    assert captured["model"] == "diarize-model"
+    assert captured["response_format"] == "diarized_json"
+    assert captured["chunking_strategy"] == "auto"
+    assert captured["known_speaker_names"] == ["narrator"]
+    import base64
+    assert captured["known_speaker_references"] == ["data:audio/wav;base64," + base64.b64encode(b"RIFFreference").decode("ascii")]
+    assert "prompt" not in captured
+    assert spans == [
+        {"speaker": "narrator", "start": 0.0, "end": 9.25, "text": "කතාව"},
+        {"speaker": "A", "start": 13.9, "end": 15.4, "text": "Hi, how can I assist you?"},
+    ]
+
+
+def test_diarize_without_a_reference_omits_the_speaker_fields(tmp_path):
+    captured = {}
+
+    class Transcriptions:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(segments=[])
+
+    ai = AIClient.__new__(AIClient)
+    ai.client = SimpleNamespace(audio=SimpleNamespace(transcriptions=Transcriptions()))
+    sample = tmp_path / "sample.wav"
+    sample.write_bytes(b"RIFFsample")
+
+    assert ai.diarize(sample, "diarize-model") == []
+    assert "known_speaker_names" not in captured
+    assert "known_speaker_references" not in captured

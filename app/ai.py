@@ -6,10 +6,16 @@ from pathlib import Path
 from openai import OpenAI
 
 from .direction import build_instructions, speaking_speed
+from .recordings import NARRATOR
 from .schemas import FaithfulTranslation, NarrationAdaptation, QAEvaluation
 
 
 PROMPT_VERSION = "2026-09-mvp2"
+
+
+def _field(item, name: str):
+    """Read a field from either an SDK object or a plain dict."""
+    return item.get(name) if isinstance(item, dict) else getattr(item, name, None)
 
 
 class AIClient:
@@ -31,6 +37,36 @@ class AIClient:
                 prompt=prompt[:1000],
             )
         return result.text.strip()
+
+    def diarize(self, audio_path: Path, model: str, reference_path: Path | None = None) -> list[dict]:
+        """Label who speaks when. With a reference clip, the narrator's spans are labelled NARRATOR.
+
+        The diarization model does not accept a prompt, so glossary terms are not passed.
+        """
+        extra: dict = {}
+        if reference_path is not None:
+            encoded = base64.b64encode(Path(reference_path).read_bytes()).decode("ascii")
+            extra = {
+                "known_speaker_names": [NARRATOR],
+                "known_speaker_references": [f"data:audio/wav;base64,{encoded}"],
+            }
+        with Path(audio_path).open("rb") as audio_file:
+            result = self.client.audio.transcriptions.create(
+                model=model,
+                file=audio_file,
+                response_format="diarized_json",
+                chunking_strategy="auto",
+                **extra,
+            )
+        return [
+            {
+                "speaker": _field(segment, "speaker"),
+                "start": float(_field(segment, "start") or 0.0),
+                "end": float(_field(segment, "end") or 0.0),
+                "text": _field(segment, "text") or "",
+            }
+            for segment in (_field(result, "segments") or [])
+        ]
 
     def translate(
         self,
