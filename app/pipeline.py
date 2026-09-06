@@ -229,22 +229,10 @@ class Pipeline:
                 )
         return segment_ids
 
-    def _qa_verdict(
-        self,
-        qa: QAEvaluation,
-        transcript: str,
-        tts_duration_ms: int | None,
-        segment: dict,
-        check_duration: bool = True,
-    ) -> dict:
-        """Model QA plus the mechanical checks: duration ratio, and an English run that looks like a recording.
-
-        `check_duration` is False when a segment's start/end came from a detected recording's
-        real-world timing rather than narrator pacing (e.g. right after `set_segment_kind` turns a
-        kept recording into freshly authored narration) - the usual pacing ratio isn't meaningful there.
-        """
+    def _qa_verdict(self, qa: QAEvaluation, transcript: str, tts_duration_ms: int | None, segment: dict) -> dict:
+        """Model QA plus the mechanical checks: duration ratio, and an English run that looks like a recording."""
         payload = qa.model_dump()
-        if check_duration and tts_duration_ms:
+        if tts_duration_ms:
             ratio = tts_duration_ms / max(1, segment["end_ms"] - segment["start_ms"])
             payload["duration_ratio"] = round(ratio, 3)
             low, high = DURATION_RANGE
@@ -268,7 +256,6 @@ class Pipeline:
         previous_style: dict | None,
         persona: str | None,
         speed: float,
-        check_duration: bool = True,
     ) -> tuple[str, dict]:
         """Run every narration stage for one segment and return the context the next one inherits."""
         job_id, segment_id, config = job["id"], segment["id"], job["config"]
@@ -318,7 +305,7 @@ class Pipeline:
             job_id, segment_id, "qa", config["qa_model"], faithful.english_faithful + adaptation.narration_text,
             lambda: ai.evaluate(faithful.english_faithful, adaptation.narration_text, config["qa_model"]),
         )
-        qa_payload = self._qa_verdict(qa, transcript, tts_duration, segment, check_duration)
+        qa_payload = self._qa_verdict(qa, transcript, tts_duration, segment)
         qa_status = "passed" if qa_payload["passed"] else "needs_review"
         self.db.execute(
             "UPDATE segments SET qa_json=?, qa_status=?, status=?, updated_at=? WHERE id=?",
@@ -515,7 +502,7 @@ class Pipeline:
             persona, speed = self._direction_inputs(project, job["config"])
             self._narrate_segment(
                 self._ai(), job, project, fresh, project.get("speaking_profile"),
-                previous_narration, previous_style, persona, speed, check_duration=False,
+                previous_narration, previous_style, persona, speed,
             )
         except Exception as exc:  # noqa: BLE001 - reported on the segment, as regeneration does
             traceback.print_exc()

@@ -536,7 +536,9 @@ def test_a_recording_can_be_turned_into_narration(tmp_path):
     assert fresh["kind"] == "narration"
     assert fresh["tts_audio_path"].endswith("0002_r02.wav")
     assert fresh["narration_en"] == "This is a test."
-    assert fresh["qa_status"] == "passed"
+    # The fake voice is 1 s long against a 10.3 s span, so only the duration check should complain.
+    assert fresh["qa_status"] == "needs_review"
+    assert [issue for issue in fresh["qa"]["issues"] if "Duration ratio" not in issue] == []
     assert len(ai.synthesis_calls) == before + 1
     assert ai.adapt_calls[-1]["previous_narration"] == segments[0]["narration_en"]
 
