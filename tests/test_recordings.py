@@ -46,7 +46,8 @@ def test_reference_needs_at_least_two_seconds():
 
 
 def test_the_real_911_call_chunk_yields_one_recording():
-    assert recordings.original_spans(CHUNK2_SPANS, CHUNK2_MS) == [(13750, 36640)]
+    # 13.9 s − 150 ms pad; 36.486 s + 150 ms pad
+    assert recordings.original_spans(CHUNK2_SPANS, CHUNK2_MS) == [(13750, 36636)]
 
 
 def test_narrator_speech_closes_a_recording():
