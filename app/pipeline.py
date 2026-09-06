@@ -9,10 +9,10 @@ from typing import Callable, TypeVar
 
 from . import speaking_profile
 from .ai import AIClient, PROMPT_VERSION
-from .direction import segment_gap_ms
 from .audio import AudioService
 from .config import Settings
 from .database import Database, utc_now
+from .direction import segment_gap_ms
 
 
 T = TypeVar("T")
@@ -32,6 +32,13 @@ class Pipeline:
             "UPDATE jobs SET status=?, stage=?, progress=?, error=? WHERE id=?",
             (status, stage, progress, error, job_id),
         )
+
+    def _direction_inputs(self, project: dict, config: dict) -> tuple[str | None, float]:
+        """The project-level persona override (strings only) and the job's speaking speed."""
+        persona = (project.get("narrator_profile") or {}).get("persona")
+        if not isinstance(persona, str) or not persona.strip():
+            persona = None
+        return persona, config.get("speed", self.config.tts_speed)
 
     def _tracked_call(
         self,
@@ -134,8 +141,7 @@ class Pipeline:
             ai = self._ai()
             previous_context = ""
             previous_style: dict | None = None
-            persona = (project.get("narrator_profile") or {}).get("persona")
-            speed = config.get("speed", self.config.tts_speed)
+            persona, speed = self._direction_inputs(project, config)
             for position, segment_id in enumerate(segment_ids):
                 base_progress = 10 + round(80 * position / max(len(segment_ids), 1))
                 segment = self.db.one("SELECT * FROM segments WHERE id=?", (segment_id,))
@@ -169,7 +175,7 @@ class Pipeline:
                     (adaptation.narration_text, json.dumps(style), utc_now(), segment_id),
                 )
 
-                tts_path = project_dir / "generated" / job_id / f"{position + 1:04d}_r01.wav"
+                tts_path = project_dir / "generated" / job_id / f"{segment['segment_index']:04d}_r01.wav"
                 self._tracked_call(
                     job_id, segment_id, "tts", config["tts_model"], adaptation.narration_text,
                     lambda: ai.synthesize(
@@ -229,8 +235,7 @@ class Pipeline:
         )
         previous_narration = predecessor["narration_en"] if predecessor else ""
         previous_style = predecessor["style"] if predecessor else None
-        persona = (project.get("narrator_profile") or {}).get("persona")
-        speed = config.get("speed", self.config.tts_speed)
+        persona, speed = self._direction_inputs(project, config)
         try:
             faithful_text = segment["faithful_en"]
             narration_text = segment["narration_en"]

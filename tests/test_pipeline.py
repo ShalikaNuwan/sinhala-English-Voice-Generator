@@ -274,8 +274,52 @@ def test_assembly_leaves_the_adaptations_pause_between_segments(tmp_path):
     job_id = start_job(db, project_id)
     pipeline.process_job(job_id)
 
+    captured = {}
+    real_assemble = pipeline.audio.assemble
+
+    def spy(paths, wav, mp3, gaps_ms=None):
+        captured["gaps"] = gaps_ms
+        real_assemble(paths, wav, mp3, gaps_ms)
+
+    pipeline.audio.assemble = spy
+
     artifacts = pipeline.assemble_project(project_id, job_id)
 
     # Two 1 s fake segments plus the fake adaptation's 800 ms pause_after.
     duration = pipeline.audio.probe(Path(artifacts["wav"])).duration_ms
     assert 2650 <= duration <= 2950
+    assert captured["gaps"] == [800]
+
+
+def test_a_non_string_persona_is_ignored_rather_than_crashing(tmp_path):
+    ai = ProfilingFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai, narrator_profile={"persona": ["not", "a", "string"]})
+
+    pipeline.process_job(start_job(db, project_id))
+
+    assert ai.synthesis_calls[0]["persona"] is None
+    assert db.one("SELECT status FROM jobs WHERE project_id=?", (project_id,))["status"] == "awaiting_review"
+
+
+def test_regenerating_the_adaptation_passes_the_predecessors_narration(tmp_path):
+    ai = ProfilingFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai, seconds=65)
+    pipeline.process_job(start_job(db, project_id))
+    second = db.one("SELECT * FROM segments WHERE project_id=? AND segment_index=2", (project_id,))
+
+    pipeline.regenerate_segment(second["id"], "adaptation")
+
+    assert ai.adapt_calls[-1]["previous_narration"] == "This is a test."
+
+
+def test_jobs_created_before_speed_existed_fall_back_to_the_configured_speed(tmp_path):
+    ai = ProfilingFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai)
+    job_id = start_job(db, project_id)
+    config = db.one("SELECT * FROM jobs WHERE id=?", (job_id,))["config"]
+    config.pop("speed")
+    db.execute("UPDATE jobs SET config_json=? WHERE id=?", (json.dumps(config), job_id))
+
+    pipeline.process_job(job_id)
+
+    assert ai.synthesis_calls[0]["speed"] == pipeline.config.tts_speed
