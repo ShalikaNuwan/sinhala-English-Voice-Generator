@@ -189,10 +189,9 @@ def test_profile_and_issues(tmp_path):
 
     assert profile["count"] == 3  # the 50 ms tail is below the detection floor
     assert profile["max_ms"] >= 2150
-    issues = pauses.profile_issues({"profile": profile, "unpunctuated_over_cap": 1, "pace": "moderate"})
+    issues = pauses.profile_issues({"profile": profile, "pace": "moderate"})
     assert any("longest pause" in issue for issue in issues)
-    assert any("unpunctuated" in issue for issue in issues)
-    assert pauses.profile_issues({"profile": {"max_ms": 900}, "unpunctuated_over_cap": 0, "pace": "moderate"}) == []
+    assert pauses.profile_issues({"profile": {"max_ms": 900}, "pace": "moderate"}) == []
 
 
 def test_profile_of_a_file_without_pauses(tmp_path):

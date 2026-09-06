@@ -68,8 +68,8 @@ result. The voice model still produces the speech; it no longer decides the sile
    silently dropped audio.
 7. **Measure the result** (`pause_profile`): count, median, 90th percentile, maximum, pauses per
    minute; `shape` also returns the per-class counts. QA flags a segment when any pause exceeds the
-   scaled `beat` band by more than 200 ms or when unpunctuated breaks over `UNPUNCTUATED_MAX_MS`
-   remain, with the numbers in the issue text.
+   scaled `beat` band by more than 200 ms, with the numbers in the issue text. (Unpunctuated pauses
+   are always capped, so they never need a flag.)
 
 If word timestamps cannot be obtained (API error, unsupported model), shaping falls back to
 punctuation-order alignment when the count of pauses of at least 250 ms equals the count of script
@@ -91,14 +91,16 @@ breaks; otherwise the raw audio is used unchanged and a job warning names the se
 - `script_tokens(script) -> list[tuple[str, str]]`: `(normalised_word, break_class_after)`.
 - `normalise(word) -> str`.
 - `align(tokens, spoken) -> dict[int, int]`: spoken index → script index for matched words.
-- `detect_pauses(path, ffmpeg) -> list[tuple[float, float]]` (seconds), leading/trailing included.
-- `classify(pauses, spoken, mapping, tokens) -> list[tuple[float, float, str]]`.
-- `choose_targets(classified, pace, rng) -> list[tuple[float, float, int]]` (target ms).
+- `detect_pauses(path, ffmpeg, ffprobe) -> list[tuple[float, float]]` (seconds), leading/trailing
+  included.
+- `classify(pauses, spoken, mapping, tokens) -> list[tuple[float, float, str]]` and
+  `classify_by_order(pauses, tokens, duration_s)` (the fallback; `None` when counts differ).
+- `choose_targets(classified, pace, rng, duration_s) -> list[tuple[float, float, int]]` (target ms).
 - `rebuild(path, plan, duration_s, destination, ffmpeg) -> None`.
-- `pause_profile(path, ffmpeg) -> dict` and `profile_issues(result) -> list[str]` (takes the dict
-  `shape` returns).
-- `shape(path, script, spoken, pace, destination, seed, ffmpeg) -> dict` (returns the profile of the
-  shaped file plus the plan for the record).
+- `pause_profile(path, ffmpeg, ffprobe) -> dict` and `profile_issues(result) -> list[str]` (takes
+  the dict `shape` returns).
+- `shape(path, script, spoken, pace, destination, seed, ffmpeg, ffprobe) -> dict` (method, pace,
+  per-class counts, plan, and the profile of the shaped file); raises `AlignmentError`.
 
 ### `app/ai.py`
 
@@ -114,7 +116,8 @@ breaks; otherwise the raw audio is used unchanged and a job warning names the se
 - `_narrate_segment`: synthesize to `NNNN_rNN_raw.wav`; when shaping is on, obtain word timestamps
   (tracked call, stage `alignment`), shape to `NNNN_rNN.wav`, store the pause profile inside
   `qa_json` under `pauses`, and let `_qa_verdict` add `profile_issues`. When shaping is off or fails,
-  the raw file is renamed to `NNNN_rNN.wav` and, on failure, a warning names the segment.
+  the raw file is renamed to `NNNN_rNN.wav`; on failure the raw file is kept and copied to
+  `NNNN_rNN.wav`, and a warning names the segment.
 - `regenerate_segment` (tts stage) shapes the same way.
 - The speaking profile's derived pace drives the scale; a missing profile means `moderate`.
 
@@ -129,9 +132,9 @@ breaks; otherwise the raw audio is used unchanged and a job warning names the se
 | Case | Behaviour |
 |---|---|
 | Word-timestamp call fails | Punctuation-order fallback if counts match; else raw audio, warning. Job continues. |
-| No pauses detected | Audio used as is; profile recorded; no issue unless duration is silent. |
+| No pauses detected | With word timestamps: rebuilt with edge trims only, profile recorded. Without: the order fallback refuses when the script has breaks, so the raw audio is kept with a warning. |
 | Alignment leaves a pause unmapped | Class `unknown`: left at its current length. |
-| Rebuild fails in FFmpeg | `AudioError`; segment marked failed as any TTS failure is. |
+| Rebuild or profile fails in FFmpeg | Raw audio kept and copied to the final name; warning names the segment. The paid synthesis is never discarded. |
 | Shaping off (`SHAPE_PAUSES=0`) | Raw file used; no alignment call. |
 | Old rows | Unaffected; regeneration of an old segment shapes it. |
 
@@ -139,7 +142,7 @@ breaks; otherwise the raw audio is used unchanged and a job warning names the se
 
 - `tests/test_pauses.py`: tokenising and classes (comma, dash, ellipsis, sentence, paragraph,
   none, numbers); normalisation; alignment with a mismatched token ("1st" vs "1") and an
-  inserted/dropped word; classification with the 150 ms tolerance; targets inside scaled bands and
+  inserted/dropped word; classification under timestamp drift on both sides; targets inside scaled bands and
   reproducible by seed; `none` capped and never lengthened; edge trimming; `rebuild` on a synthetic
   file of tone bursts with known gaps, asserting the output gaps by silence detection and the
   speech runs unchanged in length; `pause_profile` and `profile_issues` thresholds.

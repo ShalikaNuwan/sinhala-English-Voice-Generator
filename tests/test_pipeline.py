@@ -871,3 +871,42 @@ def test_regenerating_tts_with_shaping_off_keeps_the_voice_as_is(tmp_path):
     assert fresh["tts_audio_path"].endswith("0001_r02.wav")
     assert measured_gaps(Path(fresh["tts_audio_path"])) == pytest.approx([900, 1400], abs=40)
     assert "pauses" not in fresh["qa"] and ai.timestamp_calls == 0
+
+
+def test_an_empty_word_list_is_reported_as_a_warning(tmp_path):
+    class MuteFakeAI(PausingFakeAI):
+        def word_timestamps(self, _audio_path, _model):
+            self.timestamp_calls += 1
+            return []
+
+    ai = MuteFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai)
+    job_id = start_job(db, project_id)
+
+    pipeline.process_job(job_id)
+
+    segment = db.one("SELECT * FROM segments WHERE project_id=?", (project_id,))
+    assert segment["qa"]["pauses"]["method"] == "order"
+    warnings = db.one("SELECT * FROM jobs WHERE id=?", (job_id,))["warnings"]
+    assert any("returned no words on segment 1" in w for w in warnings)
+
+
+def test_a_rebuild_failure_keeps_the_raw_voice_and_the_job_continues(tmp_path, monkeypatch):
+    from app import pauses
+
+    def broken_rebuild(*_args, **_kwargs):
+        raise RuntimeError("ffmpeg exploded")
+
+    monkeypatch.setattr(pauses, "rebuild", broken_rebuild)
+    ai = PausingFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai)
+    job_id = start_job(db, project_id)
+
+    pipeline.process_job(job_id)
+
+    job = db.one("SELECT * FROM jobs WHERE id=?", (job_id,))
+    assert job["status"] == "awaiting_review"
+    assert any("Pauses left as voiced on segment 1" in w and "ffmpeg exploded" in w for w in job["warnings"])
+    segment = db.one("SELECT * FROM segments WHERE project_id=?", (project_id,))
+    assert measured_gaps(Path(segment["tts_audio_path"])) == pytest.approx([900, 1400], abs=40)
+    assert "pauses" not in segment["qa"]

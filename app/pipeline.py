@@ -252,7 +252,7 @@ class Pipeline:
         if not revoiced:  # a QA-only rerun keeps the stored pause verdict; new audio does not inherit it
             shaped = shaped or (segment.get("qa") or {}).get("pauses")
         if shaped:
-            payload["pauses"] = {key: shaped.get(key) for key in ("method", "pace", "classes", "profile", "unpunctuated_over_cap")}
+            payload["pauses"] = {key: shaped.get(key) for key in ("method", "pace", "classes", "profile")}
             for issue in pauses.profile_issues(shaped):
                 payload["passed"] = False
                 payload["issues"] = payload["issues"] + [issue]
@@ -274,13 +274,15 @@ class Pipeline:
                 job["id"], segment["id"], "alignment", align_model, str(raw_path),
                 lambda: ai.word_timestamps(raw_path, align_model),
             )
+            if not spoken:
+                self._warn(job["id"], f"Word timestamps returned no words on segment {segment['segment_index']}")
         except Exception as exc:  # noqa: BLE001 - alignment is an enhancement; shaping can still try by order
             traceback.print_exc()
             self._warn(job["id"], f"Word timestamps failed on segment {segment['segment_index']}: {str(exc)[:200]}")
         try:
             return pauses.shape(raw_path, script, spoken, pace, final_path, seed=segment["id"], ffmpeg=self.config.ffmpeg, ffprobe=self.config.ffprobe)
-        except pauses.AlignmentError as exc:
-            self._warn(job["id"], f"Pauses left as voiced on segment {segment['segment_index']}: {exc}")
+        except (pauses.AlignmentError, RuntimeError) as exc:  # a shaping problem must not cost the job its voiced audio
+            self._warn(job["id"], f"Pauses left as voiced on segment {segment['segment_index']}: {str(exc)[:200]}")
             shutil.copyfile(raw_path, final_path)
             return None
 

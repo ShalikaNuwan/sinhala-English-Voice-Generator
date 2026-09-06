@@ -8,7 +8,6 @@ gets a human-like length with a little variation. Speech is never stretched or r
 from __future__ import annotations
 
 import difflib
-import json
 import math
 import random
 import re
@@ -42,7 +41,6 @@ OVERRUN_TOLERANCE_MS = 200
 
 _NON_ALNUM = re.compile(r"[^0-9a-z]+")
 _CLOSERS = "\"'”’)]"
-_BREAK_ORDER = ["clause", "dash", "sentence", "paragraph", "beat"]
 
 _ABBREVIATIONS = {"mr", "mrs", "ms", "dr", "st", "jr", "sr", "vs", "etc", "eg", "ie"}  # a.m., U.S. match _DOTTED
 _DOTTED = re.compile(r"^(?:[A-Za-z]\.)+$")  # a.m., U.S., J.
@@ -254,6 +252,7 @@ def rebuild(path: Path, plan: list[tuple[float, float, int]], duration_s: float,
         capture_output=True, text=True,
     )
     if result.returncode != 0:
+        destination.unlink(missing_ok=True)  # never leave a truncated file behind
         raise RuntimeError((result.stderr or "Pause rebuild failed")[-1200:])
 
 
@@ -274,15 +273,13 @@ def pause_profile(path: Path, ffmpeg: str = "ffmpeg", ffprobe: str = "ffprobe") 
 
 
 def profile_issues(result: dict) -> list[str]:
-    """QA text for a shaped segment whose pauses are still outside the natural range."""
+    """QA text for a shaped segment whose longest pause is still outside the natural range."""
     issues = []
     profile = result.get("profile") or {}
     scale = PACE_SCALE.get(result.get("pace", "moderate"), 1.0)
     ceiling = round(BANDS["beat"][1] * scale) + OVERRUN_TOLERANCE_MS
     if profile.get("max_ms", 0) > ceiling:
         issues.append(f"Pauses: longest pause {profile['max_ms']} ms exceeds the natural ceiling of {ceiling} ms")
-    if result.get("unpunctuated_over_cap", 0):
-        issues.append(f"Pauses: {result['unpunctuated_over_cap']} unpunctuated break(s) over {UNPUNCTUATED_MAX_MS} ms remain")
     return issues
 
 
@@ -316,17 +313,13 @@ def shape(
     plan = choose_targets(classified, pace, random.Random(seed), duration)
     rebuild(path, plan, duration, destination, ffmpeg)
     classes: dict[str, int] = {}
-    over_cap = 0
     for (start, end, cls), (_, _, target) in zip(classified, plan):
         name = "edge" if start <= 0.005 or end >= duration - 0.005 else cls
         classes[name] = classes.get(name, 0) + 1
-        if name == "none" and target > UNPUNCTUATED_MAX_MS:
-            over_cap += 1
     return {
         "method": method,
         "pace": pace,
         "classes": classes,
-        "unpunctuated_over_cap": over_cap,
         "plan": [{"start": round(s, 3), "end": round(e, 3), "target_ms": t} for s, e, t in plan],
         "profile": pause_profile(destination, ffmpeg, ffprobe),
     }
