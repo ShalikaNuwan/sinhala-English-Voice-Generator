@@ -73,3 +73,70 @@ def test_adaptation_has_documented_defaults_and_a_stable_style_contract():
     assert set(get_args(NarrationAdaptation.model_fields["beat"].annotation)) == {
         "setup", "build", "reveal", "aftermath", "reflection",
     }
+
+
+def test_adaptation_asks_for_a_spoken_performance_script_with_previous_context():
+    captured = {}
+
+    class Responses:
+        def parse(self, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(output_parsed=NarrationAdaptation(narration_text="ok"))
+
+    ai = AIClient.__new__(AIClient)
+    ai.client = SimpleNamespace(responses=Responses())
+
+    ai.adapt("She was found dead.", "text-model", {"tone": "calm"}, previous_narration="Earlier that night…")
+
+    system = captured["input"][0]["content"]
+    user = captured["input"][1]["content"]
+    assert "spoken" in system.lower() or "speak" in system.lower()
+    assert "ellipsis" in system.lower()
+    assert "beat" in system.lower() and "delivery" in system.lower()
+    assert "Do not add, remove, weaken, or strengthen" in system
+    assert "Earlier that night…" in user
+    assert "She was found dead." in user
+    assert captured["text_format"] is NarrationAdaptation
+
+
+def test_synthesis_sends_the_brief_speed_and_wav_format(tmp_path):
+    from app import direction
+
+    captured = {}
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def stream_to_file(self, path):
+            captured["path"] = path
+
+    class Speech:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            return Response()
+
+    ai = AIClient.__new__(AIClient)
+    ai.client = SimpleNamespace(
+        audio=SimpleNamespace(speech=SimpleNamespace(with_streaming_response=Speech()))
+    )
+    output = tmp_path / "generated" / "0002_r01.wav"
+    style = {"beat": "reveal", "emotion": "tense", "emphasis": ["911"]}
+    previous = {"beat": "setup", "emotion": "calm"}
+
+    ai.synthesize(
+        "Hello? Hello?", "tts-model", "cedar", style, output,
+        profile=None, previous_style=previous, persona=None, speed=0.92,
+    )
+
+    assert captured["model"] == "tts-model"
+    assert captured["voice"] == "cedar"
+    assert captured["input"] == "Hello? Hello?"
+    assert captured["speed"] == 0.92
+    assert captured["response_format"] == "wav"
+    assert captured["instructions"] == direction.build_instructions(style, None, previous, None)
+    assert captured["path"] == output
+    assert output.parent.exists()

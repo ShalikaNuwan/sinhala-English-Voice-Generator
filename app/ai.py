@@ -5,46 +5,11 @@ from pathlib import Path
 
 from openai import OpenAI
 
+from .direction import build_instructions, speaking_speed
 from .schemas import FaithfulTranslation, NarrationAdaptation, QAEvaluation
 
 
-PROMPT_VERSION = "2026-09-mvp1"
-
-
-def narration_instructions(style: dict, profile: dict | None) -> str:
-    """Build the TTS direction: who the narrator is, then what this moment needs.
-
-    The profile describes the original speaker and stays constant across the project.
-    The style comes from the adaptation model and changes segment to segment.
-    """
-    lines = ["Natural English documentary narration."]
-
-    if profile:
-        derived = profile.get("derived") or {}
-        measured = profile.get("measured") or {}
-        described = profile.get("described")
-        character = ["Narrator character, matched to the original speaker:"]
-        if described:
-            character.append(described)
-        if derived:
-            character.append(
-                f"Baseline pace is {derived.get('pace', 'moderate')}, "
-                f"with {derived.get('pause_style', 'deliberate')} pauses and "
-                f"{derived.get('dynamics', 'controlled')} delivery."
-            )
-        if measured.get("mean_pause_ms"):
-            character.append(
-                f"Leave roughly {measured['mean_pause_ms']}ms between sentences, "
-                f"stretching to about {measured['longest_pause_ms']}ms at the most dramatic beats."
-            )
-        lines.append(" ".join(character))
-
-    emphasis = ", ".join(style.get("emphasis") or [])
-    moment = f"This passage: {style.get('emotion', 'neutral')} in tone, pace {style.get('pace', 'moderate')}."
-    if emphasis:
-        moment += f" Emphasise: {emphasis}."
-    lines.append(moment)
-    return " ".join(lines)
+PROMPT_VERSION = "2026-09-mvp2"
 
 
 class AIClient:
@@ -106,6 +71,7 @@ class AIClient:
         faithful_en: str,
         model: str,
         narrator_profile: dict,
+        previous_narration: str = "",
     ) -> NarrationAdaptation:
         response = self.client.responses.parse(
             model=model,
@@ -113,16 +79,36 @@ class AIClient:
                 {
                     "role": "system",
                     "content": (
-                        "Rewrite faithful English into natural spoken narration. Use the narrator profile. "
-                        "Do not add, remove, weaken, or strengthen factual claims. Preserve supported suspense "
-                        "and emphasis, and avoid formal written-English constructions. Collapse accidental "
-                        "repeated starts, duplicated phrases, and incomplete false starts, while preserving "
-                        "every distinct factual detail."
+                        "You turn faithful English into a script that a storyteller will speak aloud as the "
+                        "voice-over of a true-crime documentary. Write for the ear, not the page:\n"
+                        "- Short sentences, one idea each. Use contractions. Avoid formal written-English "
+                        "constructions.\n"
+                        "- Put an ellipsis (…) where the narrator should hold a beat, and a dash (—) for a "
+                        "change of thought or an afterthought. Use them only where a person telling the story "
+                        "would actually pause.\n"
+                        "- Start a new paragraph (blank line) before a shift in the story.\n"
+                        "- Write dates, times, and numbers the way they are said aloud, for example "
+                        "'May 1st, 2010' and '4:51 in the morning'.\n"
+                        "- Keep quoted speech from 911 calls and witnesses as plain spoken lines.\n"
+                        "- Collapse accidental repeated starts, duplicated phrases, and incomplete false starts.\n"
+                        "Do not add, remove, weaken, or strengthen any factual claim. Preserve every distinct "
+                        "name, date, number, place, and causal link. Preserve supported suspense and emphasis. "
+                        "Use the narrator profile.\n"
+                        "Also return: beat (where this passage sits in the story: setup, build, reveal, "
+                        "aftermath, or reflection); delivery (one sentence of direction to the voice actor for "
+                        "this passage); emotion; pace; emphasis (exact phrases to weight); and pause_before_ms "
+                        "and pause_after_ms (silence in milliseconds the narrator would leave before and after this "
+                        "passage; leave both at 0 unless this passage needs a longer or shorter pause than the "
+                        "narrator's usual gap)."
                     ),
                 },
                 {
                     "role": "user",
-                    "content": f"Narrator profile: {narrator_profile}\nFaithful English: {faithful_en}",
+                    "content": (
+                        f"Narrator profile: {narrator_profile}\n"
+                        f"Previous narration, for context only (do not repeat it): {previous_narration}\n"
+                        f"Faithful English: {faithful_en}"
+                    ),
                 },
             ],
             text_format=NarrationAdaptation,
@@ -139,15 +125,19 @@ class AIClient:
         style: dict,
         output_path: Path,
         profile: dict | None = None,
+        previous_style: dict | None = None,
+        persona: str | None = None,
+        speed: float = 1.0,
     ) -> None:
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        instructions = narration_instructions(style, profile)
+        instructions = build_instructions(style, profile, previous_style, persona)
         with self.client.audio.speech.with_streaming_response.create(
             model=model,
             voice=voice,
             input=text,
             instructions=instructions,
-            response_format="mp3",
+            speed=speaking_speed(speed),
+            response_format="wav",
         ) as response:
             response.stream_to_file(output_path)
 
