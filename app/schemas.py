@@ -19,6 +19,7 @@ class ProcessRequest(BaseModel):
     tts_model: str | None = None
     audio_model: str | None = None
     voice: str | None = None
+    speed: float | None = Field(default=None, ge=0.25, le=4.0)
     human_review_gate: bool = True
 
 

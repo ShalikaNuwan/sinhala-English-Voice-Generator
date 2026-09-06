@@ -52,14 +52,15 @@ def test_project_upload_and_validation(tmp_path, monkeypatch):
 
 
 
-def test_job_configuration_defaults_to_the_configured_male_voice():
+def test_job_configuration_defaults_to_cedar_at_normal_speed():
     from app.config import Settings
     from app.main import job_configuration
     from app.schemas import ProcessRequest
 
     config = job_configuration(ProcessRequest(), Settings(openai_api_key="unused"))
 
-    assert config["voice"] == "onyx"
+    assert config["voice"] == "cedar"
+    assert config["speed"] == 1.0
     assert config["audio_model"] == "gpt-audio"
     assert config["human_review_gate"] is True
 
@@ -70,9 +71,10 @@ def test_job_configuration_lets_a_request_override_the_voice_and_audio_model():
     from app.schemas import ProcessRequest
 
     config = job_configuration(
-        ProcessRequest(voice="ballad", audio_model="gpt-audio-mini"),
+        ProcessRequest(voice="ballad", audio_model="gpt-audio-mini", speed=0.9),
         Settings(openai_api_key="unused"),
     )
 
     assert config["voice"] == "ballad"
     assert config["audio_model"] == "gpt-audio-mini"
+    assert config["speed"] == 0.9
