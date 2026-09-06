@@ -126,12 +126,14 @@ class AudioService:
         mp3_path: Path,
         gaps_ms: list[int] | None = None,
     ) -> None:
-        """Join the segments in order, leaving `gaps_ms[i]` of silence after segment i."""
+        """Join the segments in order, leaving `gaps_ms[i]` of silence after segment i. A gap of 0 joins directly."""
         if not segment_paths:
             raise AudioError("No generated segments are available for assembly")
-        gaps = list(gaps_ms or [])
-        if gaps and len(gaps) != len(segment_paths) - 1:
+        gaps = list(gaps_ms) if gaps_ms is not None else []
+        if gaps_ms is not None and len(gaps) != len(segment_paths) - 1:
             raise AudioError("Assembly needs exactly one gap between each pair of segments")
+        if any(gap < 0 for gap in gaps):
+            raise AudioError("Segment gaps must not be negative")
         wav_path.parent.mkdir(parents=True, exist_ok=True)
         inputs: list[str] = []
         labels: list[str] = []
@@ -147,7 +149,7 @@ class AudioService:
         self._run([
             self.ffmpeg, "-y", "-v", "error", *inputs,
             "-filter_complex", f"{''.join(labels)}concat=n={len(labels)}:v=0:a=1,loudnorm=I=-16:TP=-1.5:LRA=11[out]",
-            "-map", "[out]", "-ar", "24000", str(wav_path),
+            "-map", "[out]", "-ac", "1", "-ar", "24000", str(wav_path),
         ])
         self._run([
             self.ffmpeg, "-y", "-v", "error", "-i", str(wav_path),
