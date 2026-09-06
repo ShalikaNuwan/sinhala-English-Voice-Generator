@@ -66,6 +66,8 @@ All model names are environment variables so deployment is not tied to a changin
 | `TTS_SPEED` | `1.0` |
 | `DIARIZE_MODEL` | `gpt-4o-transcribe-diarize` |
 | `DETECT_RECORDINGS` | `1` |
+| `ALIGN_MODEL` | `whisper-1` |
+| `SHAPE_PAUSES` | `1` |
 | `AUDIO_MODEL` | `gpt-audio` |
 | `DATA_DIR` | `./data` |
 | `MAX_AUDIO_MINUTES` | `120` |
@@ -133,9 +135,8 @@ Every TTS call is directed with one brief, built in `app/direction.py` from four
    reset at segment boundaries. Regenerating a segment looks up its predecessor for the same reason.
 
 Pace is driven through the brief. `TTS_SPEED` (or `speed` on the process request) is passed to the
-API and defaults to `1.0`. A request value outside 0.25–4.0 is rejected; an environment value outside
-that range is clamped. On `gpt-4o-mini-tts` the setting is honoured but gentle: 0.92 lengthened the test
-segments by two to three percent, and the audio-model judge preferred 1.0.
+API and defaults to `1.0`. The brief no longer quotes pause lengths: pauses are shaped after synthesis
+(see below).
 
 At assembly, the gap between two segments is the adaptation's `pause_after_ms` plus the next
 `pause_before_ms`; when both are zero it falls back to the source narrator's mean pause, and it is
@@ -180,6 +181,30 @@ speech over a clip is not separated.
 
 `scripts/end_to_end_check.py` runs the real pipeline on a slice of an existing project's source with
 the configured models and prints every segment's kind and text. It spends API credit.
+
+## Natural pauses
+
+The voice model decides how the words are spoken; the pipeline decides the silences. After each
+narration segment is voiced, the raw file is kept as `NNNN_rNN_raw.wav` and the pauses are detected
+with FFmpeg. One `whisper-1` call with word timestamps ties every pause to its place in the script,
+and the script's punctuation says what kind of break it is: a clause break after a comma, a dash, a
+sentence end, a paragraph shift after a blank line, or a held beat after an ellipsis. Each kind gets
+a length drawn from a band tuned for an intimate English storyteller (clause 150–280 ms, dash
+250–400, sentence 420–650, paragraph 850–1200, beat 1200–1600), scaled shorter for a continuous
+narrator and longer for a measured one, with a little variation so nothing is metronomic. A break the
+script did not ask for is capped at 200 ms. Leading and trailing silence are trimmed to 60 ms so the
+assembly gap is the only gap at a join. Speech itself is never stretched or re-levelled. The bands
+live at the top of `app/pauses.py`.
+
+QA records the pause profile of every shaped segment (count, median, 90th percentile, longest, per
+minute) and flags one whose longest pause exceeds the natural ceiling or that still has unpunctuated
+breaks over 200 ms. A pause the pipeline cannot tie to the script is left at its length, never
+shortened. If word timestamps fail, clear pauses are matched in order to the script's breaks; if that
+does not line up either, the raw voice is kept and the job says so. `SHAPE_PAUSES=0` (or
+`shape_pauses` on the process request) turns shaping off.
+
+`scripts/pause_listening_set.py <job_id> <segment_index...>` copies the raw and shaped files for
+chosen segments to `data/pause_listening/` with a pause table for each, for listening.
 
 ## Production boundaries
 
