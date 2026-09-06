@@ -117,3 +117,69 @@ def test_job_configuration_lets_a_request_turn_recording_detection_off():
 
     assert config["detect_recordings"] is False
     assert config["diarize_model"] == "diarize-next"
+
+
+def seed_job_with_segments(module, kinds):
+    """Insert a project, a job, and one segment per kind directly into the app's database."""
+    import json
+    import uuid
+
+    from app.database import utc_now
+
+    project_id, job_id = str(uuid.uuid4()), str(uuid.uuid4())
+    now = utc_now()
+    module.db.execute(
+        "INSERT INTO projects(id,title,topic,created_at,updated_at) VALUES(?,?,?,?,?)",
+        (project_id, "Seeded", "History", now, now),
+    )
+    module.db.execute(
+        "INSERT INTO jobs(id,project_id,status,stage,progress,config_json,warnings_json,created_at) VALUES(?,?,?,?,?,?,?,?)",
+        (job_id, project_id, "awaiting_review", "review", 95, "{}", json.dumps(["Recording detection failed on chunk 2: timeout"]), now),
+    )
+    ids = []
+    for index, kind in enumerate(kinds, start=1):
+        segment_id = str(uuid.uuid4())
+        ids.append(segment_id)
+        module.db.execute(
+            "INSERT INTO segments(id,job_id,project_id,segment_index,start_ms,end_ms,source_audio_path,kind,qa_json,qa_status,status,updated_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            (segment_id, job_id, project_id, index, 0, 1000, "x.wav", kind,
+             json.dumps({"passed": False, "issues": ["Recorded audio kept as is. Confirm."]}) if kind == "original" else "{}",
+             "needs_review" if kind == "original" else "passed", "kept" if kind == "original" else "passed", now),
+        )
+    return job_id, ids
+
+
+def test_kind_and_confirm_endpoints(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    import app.config
+    import app.main
+
+    importlib.reload(app.config)
+    module = importlib.reload(app.main)
+    from fastapi.testclient import TestClient
+
+    client = TestClient(module.app)
+    job_id, (narration_id, original_id) = seed_job_with_segments(module, ["narration", "original"])
+    flips = []
+    monkeypatch.setattr(module.pipeline, "set_segment_kind", lambda segment_id, kind: flips.append((segment_id, kind)))
+
+    job = client.get(f"/api/jobs/{job_id}").json()
+    assert job["warnings"] == ["Recording detection failed on chunk 2: timeout"]
+    segments = client.get(f"/api/jobs/{job_id}/segments").json()
+    assert [s["kind"] for s in segments] == ["narration", "original"]
+
+    flipped = client.patch(f"/api/segments/{narration_id}/kind", json={"kind": "original"})
+    assert flipped.status_code == 202
+    assert flips == [(narration_id, "original")]
+    assert client.get(f"/api/jobs/{job_id}/segments").json()[0]["status"] == "regenerating"
+
+    assert client.patch(f"/api/segments/{original_id}/kind", json={"kind": "bogus"}).status_code == 422
+
+    confirmed = client.post(f"/api/segments/{original_id}/confirm")
+    assert confirmed.status_code == 200
+    assert confirmed.json()["qa_status"] == "passed"
+    assert "Recorded audio kept as is. Confirm." not in confirmed.json()["qa"]["issues"]
+
+    assert client.post(f"/api/segments/{narration_id}/confirm").status_code == 409

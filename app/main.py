@@ -12,7 +12,7 @@ from .audio import AudioError, AudioService
 from .config import Settings, settings
 from .database import Database, utc_now
 from .pipeline import Pipeline
-from .schemas import ProcessRequest, ProjectCreate, RegenerateRequest, TextUpdate
+from .schemas import KindUpdate, ProcessRequest, ProjectCreate, RegenerateRequest, TextUpdate
 
 
 ALLOWED_EXTENSIONS = {".wav", ".mp3", ".m4a", ".mp4", ".webm", ".ogg", ".flac"}
@@ -211,6 +211,28 @@ def regenerate_segment(segment_id: str, payload: RegenerateRequest, background: 
     db.execute("UPDATE segments SET status='regenerating', updated_at=? WHERE id=?", (utc_now(), segment_id))
     background.add_task(pipeline.regenerate_segment, segment_id, payload.stage)
     return {"segment_id": segment_id, "status": "regenerating", "stage": payload.stage}
+
+
+@app.patch("/api/segments/{segment_id}/kind", status_code=202)
+def update_segment_kind(segment_id: str, payload: KindUpdate, background: BackgroundTasks) -> dict:
+    """Keep a segment as recorded audio, or voice one that detection kept."""
+    require_segment(segment_id)
+    if payload.kind == "narration" and not settings.openai_api_key:
+        raise HTTPException(503, "OPENAI_API_KEY is not configured")
+    db.execute("UPDATE segments SET status='regenerating', updated_at=? WHERE id=?", (utc_now(), segment_id))
+    background.add_task(pipeline.set_segment_kind, segment_id, payload.kind)
+    return {"segment_id": segment_id, "kind": payload.kind, "status": "regenerating"}
+
+
+@app.post("/api/segments/{segment_id}/confirm")
+def confirm_segment(segment_id: str) -> dict:
+    """The reviewer accepts a kept recording."""
+    require_segment(segment_id)
+    try:
+        pipeline.confirm_segment(segment_id)
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return present_segment(require_segment(segment_id))
 
 
 @app.post("/api/projects/{project_id}/assemble")
