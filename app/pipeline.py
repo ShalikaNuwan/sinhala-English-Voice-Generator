@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import traceback
 import uuid
 from pathlib import Path
 from typing import Callable, TypeVar
 
-from . import recordings, speaking_profile
+from . import pauses, recordings, speaking_profile
 from .ai import AIClient, PROMPT_VERSION
 from .audio import AudioService
 from .config import Settings
@@ -232,8 +233,10 @@ class Pipeline:
                 )
         return segment_ids
 
-    def _qa_verdict(self, qa: QAEvaluation, transcript: str, tts_duration_ms: int | None, segment: dict) -> dict:
-        """Model QA plus the mechanical checks: duration ratio, and an English run that looks like a recording."""
+    def _qa_verdict(
+        self, qa: QAEvaluation, transcript: str, tts_duration_ms: int | None, segment: dict, shaped: dict | None = None,
+    ) -> dict:
+        """Model QA plus the mechanical checks: duration ratio, an English run that looks like a recording, and pauses."""
         payload = qa.model_dump()
         if tts_duration_ms is not None:
             ratio = tts_duration_ms / max(1, segment["end_ms"] - segment["start_ms"])
@@ -246,7 +249,38 @@ class Pipeline:
         if recordings.english_run(transcript):
             payload["passed"] = False
             payload["issues"] = payload["issues"] + [ENGLISH_NOTE]
+        if shaped:
+            payload["pauses"] = {key: shaped[key] for key in ("method", "pace", "classes", "profile")}
+            for issue in pauses.profile_issues(shaped):
+                payload["passed"] = False
+                payload["issues"] = payload["issues"] + [issue]
         return payload
+
+    def _shape_pauses(
+        self, ai: AIClient, job: dict, segment: dict, raw_path: Path, final_path: Path, script: str, profile: dict | None,
+    ) -> dict | None:
+        """Turn the voice's pauses into shaped ones; on any failure the raw voice is kept and a warning says why."""
+        config = job["config"]
+        if not config.get("shape_pauses", self.config.shape_pauses):
+            raw_path.replace(final_path)
+            return None
+        pace = ((profile or {}).get("derived") or {}).get("pace") or "moderate"
+        align_model = config.get("align_model", self.config.align_model)
+        spoken: list[dict] = []
+        try:
+            spoken = self._tracked_call(
+                job["id"], segment["id"], "alignment", align_model, str(raw_path),
+                lambda: ai.word_timestamps(raw_path, align_model),
+            )
+        except Exception as exc:  # noqa: BLE001 - alignment is an enhancement; shaping can still try by order
+            traceback.print_exc()
+            self._warn(job["id"], f"Word timestamps failed on segment {segment['segment_index']}: {str(exc)[:200]}")
+        try:
+            return pauses.shape(raw_path, script, spoken, pace, final_path, seed=segment["id"], ffmpeg=self.config.ffmpeg, ffprobe=self.config.ffprobe)
+        except pauses.AlignmentError as exc:
+            self._warn(job["id"], f"Pauses left as voiced on segment {segment['segment_index']}: {exc}")
+            shutil.copyfile(raw_path, final_path)
+            return None
 
     def _narrate_segment(
         self,
@@ -290,14 +324,17 @@ class Pipeline:
             (adaptation.narration_text, json.dumps(style), utc_now(), segment_id),
         )
 
-        tts_path = self._generated_dir(project["id"], job_id) / f"{segment['segment_index']:04d}_r{segment['revision']:02d}.wav"
+        stem = f"{segment['segment_index']:04d}_r{segment['revision']:02d}"
+        generated = self._generated_dir(project["id"], job_id)
+        raw_path, tts_path = generated / f"{stem}_raw.wav", generated / f"{stem}.wav"
         self._tracked_call(
             job_id, segment_id, "tts", config["tts_model"], adaptation.narration_text,
             lambda: ai.synthesize(
-                adaptation.narration_text, config["tts_model"], config["voice"], style, tts_path,
+                adaptation.narration_text, config["tts_model"], config["voice"], style, raw_path,
                 profile, previous_style, persona, speed,
             ),
         )
+        shaped = self._shape_pauses(ai, job, segment, raw_path, tts_path, adaptation.narration_text, profile)
         tts_duration = self.audio.probe(tts_path).duration_ms
         self.db.execute(
             "UPDATE segments SET tts_audio_path=?, tts_duration_ms=?, status='generated', updated_at=? WHERE id=?",
@@ -308,7 +345,7 @@ class Pipeline:
             job_id, segment_id, "qa", config["qa_model"], faithful.english_faithful + adaptation.narration_text,
             lambda: ai.evaluate(faithful.english_faithful, adaptation.narration_text, config["qa_model"]),
         )
-        qa_payload = self._qa_verdict(qa, transcript, tts_duration, segment)
+        qa_payload = self._qa_verdict(qa, transcript, tts_duration, segment, shaped)
         qa_status = "passed" if qa_payload["passed"] else "needs_review"
         self.db.execute(
             "UPDATE segments SET qa_json=?, qa_status=?, status=?, updated_at=? WHERE id=?",
@@ -420,6 +457,7 @@ class Pipeline:
             faithful_text = segment["faithful_en"]
             narration_text = segment["narration_en"]
             style = segment["style"] or {}
+            shaped = None
             if stage == "translation":
                 faithful = self._tracked_call(
                     job["id"], segment_id, "translation", config["text_model"], segment["transcript_si"],
@@ -445,14 +483,17 @@ class Pipeline:
                 stage = "tts"
             if stage == "tts":
                 revision = segment["revision"] + 1
-                tts_path = self._generated_dir(project["id"], job["id"]) / f"{segment['segment_index']:04d}_r{revision:02d}.wav"
+                stem = f"{segment['segment_index']:04d}_r{revision:02d}"
+                generated = self._generated_dir(project["id"], job["id"])
+                raw_path, tts_path = generated / f"{stem}_raw.wav", generated / f"{stem}.wav"
                 self._tracked_call(
                     job["id"], segment_id, "tts", config["tts_model"], narration_text,
                     lambda: ai.synthesize(
-                        narration_text, config["tts_model"], config["voice"], style, tts_path,
+                        narration_text, config["tts_model"], config["voice"], style, raw_path,
                         project.get("speaking_profile"), previous_style, persona, speed,
                     ),
                 )
+                shaped = self._shape_pauses(ai, job, segment, raw_path, tts_path, narration_text, project.get("speaking_profile"))
                 duration = self.audio.probe(tts_path).duration_ms
                 self.db.execute(
                     "UPDATE segments SET tts_audio_path=?, tts_duration_ms=?, revision=?, qa_status='pending' WHERE id=?",
@@ -464,7 +505,7 @@ class Pipeline:
                 job["id"], segment_id, "qa", config["qa_model"], fresh["faithful_en"] + fresh["narration_en"],
                 lambda: ai.evaluate(fresh["faithful_en"], fresh["narration_en"], config["qa_model"]),
             )
-            qa_payload = self._qa_verdict(qa, fresh["transcript_si"], fresh.get("tts_duration_ms"), fresh)
+            qa_payload = self._qa_verdict(qa, fresh["transcript_si"], fresh.get("tts_duration_ms"), fresh, shaped)
             status = "passed" if qa_payload["passed"] else "needs_review"
             self.db.execute(
                 "UPDATE segments SET qa_json=?, qa_status=?, status=?, updated_at=? WHERE id=?",

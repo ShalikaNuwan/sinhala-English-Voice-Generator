@@ -5,6 +5,8 @@ import subprocess
 import uuid
 from pathlib import Path
 
+import pytest
+
 from app.config import Settings
 from app.database import Database, utc_now
 from app.pipeline import Pipeline
@@ -42,10 +44,30 @@ class FakeAI:
     def evaluate(self, *_args, **_kwargs):
         return QAEvaluation(passed=True)
 
+    def word_timestamps(self, _audio_path, _model):
+        return []
+
 
 def create_source(path: Path, seconds: float = 1.0) -> None:
     subprocess.run(
         ["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", f"sine=frequency=330:duration={seconds}", str(path)],
+        check=True,
+    )
+
+
+def bursts(path: Path, pattern: list[tuple[float, float]]) -> None:
+    """Tone bursts separated by silences: pattern is [(tone_s, silence_after_s), ...]."""
+    inputs, labels = [], []
+    for tone_s, gap_s in pattern:
+        inputs += ["-f", "lavfi", "-i", f"sine=frequency=300:duration={tone_s}"]
+        labels.append(f"[{len(labels)}:a]")
+        if gap_s > 0:
+            inputs += ["-f", "lavfi", "-t", f"{gap_s}", "-i", "anullsrc=r=24000:cl=mono"]
+            labels.append(f"[{len(labels)}:a]")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["ffmpeg", "-y", "-v", "error", *inputs, "-filter_complex", f"{''.join(labels)}concat=n={len(labels)}:v=0:a=1[out]",
+         "-map", "[out]", "-ar", "24000", "-ac", "1", str(path)],
         check=True,
     )
 
@@ -184,6 +206,31 @@ class BoundaryFakeAI(RecordingFakeAI):
         ]
 
 
+class PausingFakeAI(ProfilingFakeAI):
+    """Voices a three-part script as tone bursts with a 0.9 s and a 1.4 s pause, and knows the word times."""
+
+    def __init__(self, timestamps_error: Exception | None = None):
+        super().__init__()
+        self.timestamps_error = timestamps_error
+        self.timestamp_calls = 0
+
+    def adapt(self, faithful_en, model, narrator_profile, previous_narration=""):
+        self.adapt_calls.append({"faithful": faithful_en, "previous_narration": previous_narration})
+        return NarrationAdaptation(narration_text="First part, second part. Third part.", beat="build", emotion="calm")
+
+    def synthesize(self, text, model, voice, style, output_path, profile=None, previous_style=None, persona=None, speed=1.0):
+        self.synthesis_calls.append({"text": text, "voice": voice, "style": style, "output_path": output_path,
+                                     "previous_style": previous_style, "persona": persona, "speed": speed})
+        bursts(Path(output_path), [(1.0, 0.9), (1.0, 1.4), (1.0, 0.5)])
+
+    def word_timestamps(self, _audio_path, _model):
+        self.timestamp_calls += 1
+        if self.timestamps_error:
+            raise self.timestamps_error
+        return [{"word": w, "start": s, "end": e} for w, s, e in
+                (("First", 0.0, 0.5), ("part", 0.5, 1.0), ("second", 1.9, 2.4), ("part", 2.4, 2.9), ("Third", 4.3, 4.8), ("part", 4.8, 5.3))]
+
+
 def build_project(tmp_path, ai, seconds: float = 1.0, narrator_profile: dict | None = None):
     data_dir = tmp_path / "data"
     config = Settings(data_dir=data_dir, database_path=data_dir / "app.db", openai_api_key="not-used")
@@ -204,13 +251,14 @@ def build_project(tmp_path, ai, seconds: float = 1.0, narrator_profile: dict | N
     return pipeline, db, project_id
 
 
-def start_job(db, project_id, detect_recordings: bool = True):
+def start_job(db, project_id, detect_recordings: bool = True, shape_pauses: bool = True):
     job_id = str(uuid.uuid4())
     job_config = {
         "stt_model": "fake-stt", "text_model": "fake-text", "qa_model": "fake-qa",
         "tts_model": "fake-tts", "audio_model": "fake-audio", "voice": "onyx",
         "speed": 0.95,
         "diarize_model": "fake-diarize", "detect_recordings": detect_recordings,
+        "align_model": "fake-align", "shape_pauses": shape_pauses,
         "human_review_gate": True,
     }
     db.execute(
@@ -319,7 +367,8 @@ def test_regenerating_a_segment_uses_its_predecessors_style(tmp_path):
 
     call = ai.synthesis_calls[-1]
     assert call["previous_style"] == first["style"]
-    assert str(call["output_path"]).endswith("0002_r02.wav")
+    # The voice writes to the raw path; pause shaping produces the final 0002_r02.wav from it.
+    assert str(call["output_path"]).endswith("0002_r02_raw.wav")
 
 
 def test_regenerating_the_first_segment_has_no_predecessor(tmp_path):
@@ -678,3 +727,90 @@ def test_recording_times_on_later_chunks_account_for_the_split_padding(tmp_path)
         ("narration", 0, 45000), ("narration", 45000, 49850), ("original", 49850, 60150), ("narration", 60150, 65000),
     ]
     assert segments[2]["transcript_si"] == CALL
+
+
+def measured_gaps(path: Path) -> list[int]:
+    from app import pauses
+    found = pauses.detect_pauses(path)
+    duration = pauses._duration_s(path)
+    return [round((e - s) * 1000) for s, e in found if s > 0.005 and e < duration - 0.005]
+
+
+def test_pauses_are_shaped_after_synthesis(tmp_path):
+    from app import pauses
+
+    ai = PausingFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai)
+
+    pipeline.process_job(start_job(db, project_id))
+
+    segment = db.one("SELECT * FROM segments WHERE project_id=?", (project_id,))
+    assert segment["tts_audio_path"].endswith("0001_r01.wav")
+    assert Path(segment["tts_audio_path"]).with_name("0001_r01_raw.wav").exists()
+    gaps = measured_gaps(Path(segment["tts_audio_path"]))
+    # A pure-tone source is a "continuous" narrator, so bands are scaled by 0.85.
+    assert pauses.BANDS["clause"][0] * 0.85 - 30 <= gaps[0] <= pauses.BANDS["clause"][1] * 0.85 + 30
+    assert pauses.BANDS["sentence"][0] * 0.85 - 30 <= gaps[1] <= pauses.BANDS["sentence"][1] * 0.85 + 30
+    assert segment["qa"]["pauses"]["method"] == "words"
+    assert segment["qa"]["pauses"]["classes"] == {"clause": 1, "sentence": 1, "edge": 1}
+    assert ai.timestamp_calls == 1
+    assert db.one("SELECT stage FROM model_calls WHERE job_id=? AND stage='alignment'", (segment["job_id"],))
+
+
+def test_shaping_can_be_switched_off(tmp_path):
+    ai = PausingFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai)
+
+    pipeline.process_job(start_job(db, project_id, shape_pauses=False))
+
+    segment = db.one("SELECT * FROM segments WHERE project_id=?", (project_id,))
+    assert ai.timestamp_calls == 0
+    assert measured_gaps(Path(segment["tts_audio_path"])) == pytest.approx([900, 1400], abs=40)
+    assert "pauses" not in segment["qa"]
+
+
+def test_timestamp_failure_falls_back_to_punctuation_order(tmp_path):
+    ai = PausingFakeAI(timestamps_error=RuntimeError("no whisper"))
+    pipeline, db, project_id = build_project(tmp_path, ai)
+    job_id = start_job(db, project_id)
+
+    pipeline.process_job(job_id)
+
+    segment = db.one("SELECT * FROM segments WHERE project_id=?", (project_id,))
+    assert segment["qa"]["pauses"]["method"] == "order"
+    warnings = db.one("SELECT * FROM jobs WHERE id=?", (job_id,))["warnings"]
+    assert any("Word timestamps failed on segment 1" in w for w in warnings)
+
+
+def test_unshapeable_audio_keeps_the_raw_voice_with_a_warning(tmp_path):
+    class LonelyFakeAI(PausingFakeAI):
+        def adapt(self, faithful_en, model, narrator_profile, previous_narration=""):
+            return NarrationAdaptation(narration_text="One sentence with no breaks at all")
+
+    ai = LonelyFakeAI(timestamps_error=RuntimeError("no whisper"))
+    pipeline, db, project_id = build_project(tmp_path, ai)
+    job_id = start_job(db, project_id)
+
+    pipeline.process_job(job_id)
+
+    segment = db.one("SELECT * FROM segments WHERE project_id=?", (project_id,))
+    assert measured_gaps(Path(segment["tts_audio_path"])) == pytest.approx([900, 1400], abs=40)
+    warnings = db.one("SELECT * FROM jobs WHERE id=?", (job_id,))["warnings"]
+    assert any("Pauses left as voiced on segment 1" in w for w in warnings)
+
+
+def test_regenerating_tts_shapes_pauses_too(tmp_path):
+    from app import pauses
+
+    ai = PausingFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai)
+    pipeline.process_job(start_job(db, project_id))
+    segment = db.one("SELECT * FROM segments WHERE project_id=?", (project_id,))
+
+    pipeline.regenerate_segment(segment["id"], "tts")
+
+    fresh = db.one("SELECT * FROM segments WHERE id=?", (segment["id"],))
+    assert fresh["tts_audio_path"].endswith("0001_r02.wav")
+    gaps = measured_gaps(Path(fresh["tts_audio_path"]))
+    assert pauses.BANDS["clause"][0] * 0.85 - 30 <= gaps[0] <= pauses.BANDS["clause"][1] * 0.85 + 30
+    assert fresh["qa"]["pauses"]["method"] == "words"
