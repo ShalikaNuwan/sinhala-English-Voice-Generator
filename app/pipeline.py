@@ -517,6 +517,8 @@ class Pipeline:
         segment = self.db.one("SELECT * FROM segments WHERE id=?", (segment_id,))
         if not segment or segment.get("kind") != "original":
             raise RuntimeError("Only recorded-audio segments need confirming")
+        if not segment.get("tts_audio_path") or segment.get("status") == "failed":
+            raise RuntimeError("This recording has no audio to confirm; regenerate it first")
         qa = dict(segment.get("qa") or kept_qa())
         qa["passed"] = True
         qa["issues"] = [issue for issue in qa.get("issues", []) if issue != CONFIRM_NOTE]

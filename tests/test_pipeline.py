@@ -641,3 +641,14 @@ def test_a_failed_flip_to_original_cannot_be_assembled(tmp_path):
     assert fresh["status"] == "failed" and fresh["tts_audio_path"] is None
     with pytest.raises(RuntimeError):
         pipeline.assemble_project(project_id, job_id)
+
+
+def test_a_recording_without_audio_cannot_be_confirmed(tmp_path):
+    import pytest
+
+    pipeline, db, project_id, job_id, ai, segments = run_recording_job(tmp_path)
+    pipeline.audio.extract_levelled = lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("cut failed"))
+    pipeline.set_segment_kind(segments[2]["id"], "original")
+
+    with pytest.raises(RuntimeError, match="no audio"):
+        pipeline.confirm_segment(segments[2]["id"])
