@@ -49,7 +49,9 @@ def main() -> None:
             if source.exists():
                 shutil.copyfile(source, out / name)
                 lines.append(table(out / name))
-        lines.append(f"| script {index} | {segment['narration_en'][:120]!r} | | | | |")
+            elif source is raw:
+                lines.append(f"| {index:02d}_raw.wav | raw missing | | | | |")
+        lines.append(f"| script {index} | {segment['narration_en'][:120].replace('|', '/')!r} | | | | |")
     (out / "pauses.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     print("\n".join(lines))
     print("written to", out)

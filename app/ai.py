@@ -10,7 +10,7 @@ from .recordings import NARRATOR
 from .schemas import FaithfulTranslation, NarrationAdaptation, QAEvaluation
 
 
-PROMPT_VERSION = "2026-09-mvp2"
+PROMPT_VERSION = "2026-09-mvp3"
 
 
 def _field(item, name: str):

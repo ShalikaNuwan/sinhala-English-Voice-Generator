@@ -249,8 +249,9 @@ class Pipeline:
         if recordings.english_run(transcript):
             payload["passed"] = False
             payload["issues"] = payload["issues"] + [ENGLISH_NOTE]
+        shaped = shaped or (segment.get("qa") or {}).get("pauses")
         if shaped:
-            payload["pauses"] = {key: shaped[key] for key in ("method", "pace", "classes", "profile")}
+            payload["pauses"] = {key: shaped.get(key) for key in ("method", "pace", "classes", "profile", "unpunctuated_over_cap")}
             for issue in pauses.profile_issues(shaped):
                 payload["passed"] = False
                 payload["issues"] = payload["issues"] + [issue]

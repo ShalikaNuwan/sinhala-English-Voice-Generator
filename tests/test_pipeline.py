@@ -747,6 +747,7 @@ def test_pauses_are_shaped_after_synthesis(tmp_path):
     segment = db.one("SELECT * FROM segments WHERE project_id=?", (project_id,))
     assert segment["tts_audio_path"].endswith("0001_r01.wav")
     assert Path(segment["tts_audio_path"]).with_name("0001_r01_raw.wav").exists()
+    assert measured_gaps(Path(segment["tts_audio_path"]).with_name("0001_r01_raw.wav")) == pytest.approx([900, 1400], abs=40)
     gaps = measured_gaps(Path(segment["tts_audio_path"]))
     # A pure-tone source is a "continuous" narrator, so bands are scaled by 0.85.
     assert pauses.BANDS["clause"][0] * 0.85 - 30 <= gaps[0] <= pauses.BANDS["clause"][1] * 0.85 + 30
@@ -814,3 +815,59 @@ def test_regenerating_tts_shapes_pauses_too(tmp_path):
     gaps = measured_gaps(Path(fresh["tts_audio_path"]))
     assert pauses.BANDS["clause"][0] * 0.85 - 30 <= gaps[0] <= pauses.BANDS["clause"][1] * 0.85 + 30
     assert fresh["qa"]["pauses"]["method"] == "words"
+
+
+class CeilingFakeAI(PausingFakeAI):
+    """A 2 s pause after a word the transcriber got wrong: it stays unknown, stays 2 s, and trips the ceiling."""
+
+    def synthesize(self, text, model, voice, style, output_path, profile=None, previous_style=None, persona=None, speed=1.0):
+        self.synthesis_calls.append({"text": text, "voice": voice, "style": style, "output_path": output_path,
+                                     "previous_style": previous_style, "persona": persona, "speed": speed})
+        bursts(Path(output_path), [(1.0, 0.9), (1.0, 2.0), (1.0, 0.5)])
+
+    def word_timestamps(self, _audio_path, _model):
+        self.timestamp_calls += 1
+        # "extra" is an inserted word the script does not have; the pause after it cannot be tied to a break.
+        return [{"word": w, "start": s, "end": e} for w, s, e in
+                (("First", 0.0, 0.5), ("part", 0.5, 1.0), ("second", 1.9, 2.3), ("part", 2.3, 2.6),
+                 ("extra", 2.6, 2.9), ("Third", 4.9, 5.4), ("part", 5.4, 5.9))]
+
+
+def test_a_pause_over_the_ceiling_is_flagged_for_review(tmp_path):
+    ai = CeilingFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai)
+
+    pipeline.process_job(start_job(db, project_id))
+
+    segment = db.one("SELECT * FROM segments WHERE project_id=?", (project_id,))
+    assert segment["qa_status"] == "needs_review"
+    assert any(issue.startswith("Pauses: longest pause") for issue in segment["qa"]["issues"])
+    assert segment["qa"]["pauses"]["classes"].get("unknown") == 1
+
+
+def test_a_qa_only_regeneration_keeps_the_pause_verdict(tmp_path):
+    ai = CeilingFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai)
+    pipeline.process_job(start_job(db, project_id))
+    segment = db.one("SELECT * FROM segments WHERE project_id=?", (project_id,))
+
+    pipeline.regenerate_segment(segment["id"], "qa")
+
+    fresh = db.one("SELECT * FROM segments WHERE id=?", (segment["id"],))
+    assert fresh["qa_status"] == "needs_review"
+    assert any(issue.startswith("Pauses: longest pause") for issue in fresh["qa"]["issues"])
+    assert fresh["qa"]["pauses"]["profile"] == segment["qa"]["pauses"]["profile"]
+
+
+def test_regenerating_tts_with_shaping_off_keeps_the_voice_as_is(tmp_path):
+    ai = PausingFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai)
+    pipeline.process_job(start_job(db, project_id, shape_pauses=False))
+    segment = db.one("SELECT * FROM segments WHERE project_id=?", (project_id,))
+
+    pipeline.regenerate_segment(segment["id"], "tts")
+
+    fresh = db.one("SELECT * FROM segments WHERE id=?", (segment["id"],))
+    assert fresh["tts_audio_path"].endswith("0001_r02.wav")
+    assert measured_gaps(Path(fresh["tts_audio_path"])) == pytest.approx([900, 1400], abs=40)
+    assert "pauses" not in fresh["qa"] and ai.timestamp_calls == 0
