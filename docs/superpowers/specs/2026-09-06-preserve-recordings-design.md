@@ -23,7 +23,7 @@ the narrator's own speech is translated and voiced.
 | Overlap | The narrator is silent while a clip plays. Overlapping speech is out of scope. |
 | Clip language | Always English. Language is used as a second signal alongside speaker identity. |
 | Confirmation | Detect, then the reviewer confirms on the review page before assembly. |
-| Loudness | Clips are level-aligned to the narration target; no other processing. |
+| Loudness | Clips are level-aligned to the narration target by a two-pass measurement (single-pass `loudnorm` is a no-op under 3 s) and get a 5 ms fade at each cut point so the splice never clicks; no other processing. |
 | Approach | Diarize every segment with the narrator as a known speaker (approach 1 of 3). |
 
 ## How detection works
@@ -97,8 +97,12 @@ Files are limited to 25 MB; the pipeline's 20–60 s chunks at 24 kHz mono are u
 - `AudioService.extract(source, start_ms, end_ms, destination, pad_ms=200) -> AudioInfo`: cut a
   piece from the normalised source, mono 24 kHz, used for narration pieces (replaces the inline
   extraction in `split`, which is refactored to call it).
-- `AudioService.extract_levelled(source, start_ms, end_ms, destination) -> AudioInfo`: the same cut
-  followed by `loudnorm=I=-16:TP=-1.5:LRA=11`, used for original clips.
+- `AudioService.extract_levelled(source, start_ms, end_ms, destination) -> AudioInfo`: an exact cut,
+  loudness measured first with `loudnorm ... print_format=json`, then applied as a plain static gain
+  `volume=<dB>` where the gain is the smaller of (−16 − measured integrated loudness) and
+  (−1.5 − measured true peak), skipped for silence (under −70 LUFS), plus 5 ms fades at both ends.
+  `loudnorm` itself is not used for the gain because on FFmpeg 4.2 it leaves clips under 3 s
+  untouched even in two-pass linear mode. Used for original clips.
 
 ### `app/config.py`, `app/schemas.py`, `app/main.py`
 
