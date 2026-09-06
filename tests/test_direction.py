@@ -111,6 +111,22 @@ def test_direction_note_keeps_its_own_terminal_punctuation():
     assert "that?." not in asks
 
 
+def test_direction_note_accepts_a_single_character_ellipsis_and_an_exclamation():
+    ellipsis = direction.build_instructions({"delivery": "Let it hang…"}, None)
+    shout = direction.build_instructions({"delivery": "Do not rush this!"}, None)
+
+    assert "within the rules above: Let it hang…" in ellipsis
+    assert "hang…." not in ellipsis
+    assert "within the rules above: Do not rush this!" in shout
+    assert "this!." not in shout
+
+
+def test_blank_direction_note_is_omitted():
+    text = direction.build_instructions({"delivery": "   "}, None)
+
+    assert "Direction for this passage" not in text
+
+
 def test_brief_fills_gaps_in_a_partial_profile():
     text = direction.build_instructions({}, {"derived": {"pace": None}, "measured": {"mean_pause_ms": 900}})
 
@@ -168,3 +184,14 @@ def test_speed_is_clamped_to_the_api_range():
     assert direction.speaking_speed(0.92) == 0.92
     assert direction.speaking_speed(0.1) == 0.25
     assert direction.speaking_speed(9.0) == 4.0
+
+
+def test_gap_floor_wins_over_an_implausibly_short_longest_pause():
+    gap = direction.segment_gap_ms({"pause_after_ms": 0}, {"pause_before_ms": 0}, {"measured": {"mean_pause_ms": 100, "longest_pause_ms": 100}})
+
+    assert gap == direction.MIN_GAP_MS
+
+
+def test_speed_boundaries_are_inclusive():
+    assert direction.speaking_speed(0.25) == 0.25
+    assert direction.speaking_speed(4.0) == 4.0

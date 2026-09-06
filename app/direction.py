@@ -1,7 +1,10 @@
-"""Directs the voice: who the narrator is, how they speak, and what this passage needs.
+"""Directs the voice: who the narrator is, how they speak, what this passage needs, and how much
+silence separates passages.
 
-Everything here is a pure function of dictionaries so it can be unit-tested without
-touching the network. The pipeline passes the result to the TTS model as `instructions`.
+Everything here is a pure function of dictionaries so it can be unit-tested without touching the
+network. The pipeline sends the brief to the TTS model as `instructions` and the gaps to the
+assembler. Inputs are trusted: style dictionaries come from the validated adaptation schema and
+profiles are machine-written by `speaking_profile`, so malformed values are allowed to raise.
 """
 
 from __future__ import annotations
@@ -66,9 +69,9 @@ def _moment(style: dict | None) -> str:
         f"This passage is a {style.get('beat') or DEFAULT_BEAT} beat: "
         f"{style.get('emotion') or DEFAULT_EMOTION} in tone, pace {style.get('pace') or 'moderate'}."
     )
-    if style.get("delivery"):
-        note = str(style["delivery"])[:300].strip()
-        terminal = "" if note[-1:] in ".!?…" else "."
+    note = str(style.get("delivery") or "")[:300].strip()
+    if note:
+        terminal = "" if note.endswith((".", "!", "?", "…")) else "."
         text += f" Direction for this passage, within the rules above: {note}{terminal}"
     raw = style.get("emphasis") or []
     if isinstance(raw, str):
