@@ -72,14 +72,33 @@ def test_brief_uses_measurements_when_the_tone_analysis_failed():
 
     assert "deliberate" in text
     assert "1321" in text
-    assert "None" not in text
+    assert "Baseline pace is moderate, with deliberate pauses and moderately dynamic delivery." in text
+    assert "Voice character" in text
 
 
-def test_brief_never_prints_none_for_missing_style_fields():
-    text = direction.build_instructions({"narration_text": "x"}, None, previous_style={})
+def test_brief_uses_documented_defaults_for_missing_style_fields():
+    text = direction.build_instructions({}, None)
 
-    assert "None" not in text
-    assert "build beat" in text  # default beat
+    assert "This passage is a build beat: neutral in tone, pace moderate." in text
+
+
+def test_brief_tolerates_a_missing_style_entirely():
+    text = direction.build_instructions(None, None)
+
+    assert "This passage is a build beat: neutral in tone, pace moderate." in text
+
+
+def test_continuity_defaults_when_the_previous_style_is_sparse():
+    text = direction.build_instructions(STYLE, None, previous_style={"emotion": "tense"})
+
+    assert "previous passage was a build beat and ended tense in tone" in text
+
+
+def test_direction_note_is_hedged_and_terminated():
+    text = direction.build_instructions({"delivery": "Slow down here", "emphasis": "x"}, None)
+
+    assert "Direction for this passage, within the rules above: Slow down here." in text
+    assert "Emphasise: x." in text
 
 
 def test_brief_uses_a_project_persona_when_one_is_given():
