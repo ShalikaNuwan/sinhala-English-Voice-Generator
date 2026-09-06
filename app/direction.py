@@ -112,7 +112,8 @@ def segment_gap_ms(previous_style: dict | None, next_style: dict | None, profile
     """How much silence to leave between two assembled segments.
 
     The adaptation model's pause fields win. When they say nothing, fall back to the source
-    narrator's measured mean pause, and never leave a gap longer than their longest pause.
+    narrator's measured mean pause, and never leave a gap longer than their longest pause
+    (unless that is below the MIN_GAP_MS floor).
     """
     previous_style = previous_style or {}
     next_style = next_style or {}
