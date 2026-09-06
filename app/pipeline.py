@@ -221,7 +221,7 @@ class Pipeline:
                 source_path = chunk_path
                 if (start_ms, end_ms) != (chunk_start, chunk_end):
                     source_path = chunk_path.parent / f"{index:04d}_piece.wav"
-                    self.audio.extract(normalized, start_ms, end_ms, source_path)
+                    self.audio.extract(normalized, start_ms, end_ms, source_path, pad_ms=0)
                 self.db.execute(
                     "INSERT INTO segments(id, job_id, project_id, segment_index, start_ms, end_ms, source_audio_path, kind, updated_at) "
                     "VALUES(?,?,?,?,?,?,?,?,?)",
@@ -232,7 +232,7 @@ class Pipeline:
     def _qa_verdict(self, qa: QAEvaluation, transcript: str, tts_duration_ms: int | None, segment: dict) -> dict:
         """Model QA plus the mechanical checks: duration ratio, and an English run that looks like a recording."""
         payload = qa.model_dump()
-        if tts_duration_ms:
+        if tts_duration_ms is not None:
             ratio = tts_duration_ms / max(1, segment["end_ms"] - segment["start_ms"])
             payload["duration_ratio"] = round(ratio, 3)
             low, high = DURATION_RANGE
@@ -352,7 +352,7 @@ class Pipeline:
                 assert segment
                 if segment["kind"] == "original":
                     self._job_update(job_id, status="running", stage=f"keeping recording {position + 1}/{total}", progress=base_progress)
-                    previous_context += f"\n[Recording plays: {segment['transcript_si']}]"
+                    previous_context += f"\n[Recording plays: {(segment['transcript_si'] or '')[:200]}]"
                     continue
                 self._job_update(job_id, status="running", stage=f"transcribing {position + 1}/{total}", progress=base_progress)
                 previous_context, previous_style = self._narrate_segment(
@@ -483,7 +483,8 @@ class Pipeline:
         assert job and project
         if kind == "original":
             self.db.execute(
-                "UPDATE segments SET kind='original', faithful_en='', narration_en='', style_json='{}', updated_at=? WHERE id=?",
+                "UPDATE segments SET kind='original', faithful_en='', narration_en='', style_json='{}', "
+                "tts_audio_path=NULL, tts_duration_ms=NULL, updated_at=? WHERE id=?",
                 (utc_now(), segment_id),
             )
             fresh = self.db.one("SELECT * FROM segments WHERE id=?", (segment_id,))
@@ -531,18 +532,22 @@ class Pipeline:
                 raise RuntimeError("No processing job exists for this project")
             job_id = latest["id"]
         segments = self.db.all("SELECT * FROM segments WHERE job_id=? ORDER BY segment_index", (job_id,))
-        if not segments or any(not segment.get("tts_audio_path") for segment in segments):
+        if not segments or any(not segment.get("tts_audio_path") or segment.get("status") == "failed" for segment in segments):
             raise RuntimeError("Every segment must have generated audio before assembly")
         export_dir = self.config.data_dir / "projects" / project_id / "exports"
         wav_path = export_dir / "final_en.wav"
         mp3_path = export_dir / "final_en.mp3"
         project = self.db.one("SELECT speaking_profile_json FROM projects WHERE id=?", (project_id,))
         profile = project.get("speaking_profile") if project else None
-        gaps = [
-            MIN_GAP_MS if "original" in (earlier.get("kind"), later.get("kind"))
-            else segment_gap_ms(earlier.get("style"), later.get("style"), profile)
-            for earlier, later in zip(segments, segments[1:])
-        ]
+        def gap(earlier: dict, later: dict) -> int:
+            kinds = (earlier.get("kind"), later.get("kind"))
+            if kinds == ("original", "original") and earlier["end_ms"] == later["start_ms"]:
+                return 0
+            if "original" in kinds:
+                return MIN_GAP_MS
+            return segment_gap_ms(earlier.get("style"), later.get("style"), profile)
+
+        gaps = [gap(earlier, later) for earlier, later in zip(segments, segments[1:])]
         self.audio.assemble([Path(s["tts_audio_path"]) for s in segments], wav_path, mp3_path, gaps)
         (export_dir / "transcript_si.json").write_text(
             json.dumps([{"index": s["segment_index"], "kind": s.get("kind", "narration"), "start_ms": s["start_ms"], "end_ms": s["end_ms"], "text": s["transcript_si"]} for s in segments], ensure_ascii=False, indent=2),

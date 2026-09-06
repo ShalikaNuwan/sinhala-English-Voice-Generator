@@ -105,12 +105,17 @@ class ProfilingFakeAI(FakeAI):
         self.synthesis_calls: list[dict] = []
         self.adapt_calls: list[dict] = []
         self.diarize_calls: list[dict] = []
+        self.transcribe_paths: list[Path] = []
 
     def describe_delivery(self, _audio_path, _model):
         self.describe_calls += 1
         if self.describe_error:
             raise self.describe_error
         return "Steady, moderate energy with a factual tone."
+
+    def transcribe(self, audio_path, *_args, **_kwargs):
+        self.transcribe_paths.append(Path(audio_path))
+        return super().transcribe(audio_path, *_args, **_kwargs)
 
     def diarize(self, audio_path, model, reference=None):
         self.diarize_calls.append({"path": Path(audio_path), "reference": reference})
@@ -158,6 +163,24 @@ class RecordingFakeAI(ProfilingFakeAI):
                 {"speaker": "narrator", "start": 30.0, "end": 45.0, "text": SINHALA},
             ]
         return [{"speaker": "narrator", "start": 0.0, "end": 20.0, "text": SINHALA}]
+
+
+class BoundaryFakeAI(RecordingFakeAI):
+    """A recording runs from 40 s to 50 s, across the 45 s chunk boundary."""
+
+    def diarize(self, audio_path, model, reference=None):
+        self.diarize_calls.append({"path": Path(audio_path), "reference": reference})
+        if reference is None:
+            return [{"speaker": "A", "start": 0.0, "end": 9.0, "text": SINHALA}]
+        if Path(audio_path).name == "0001_source.wav":
+            return [
+                {"speaker": "narrator", "start": 0.0, "end": 40.0, "text": SINHALA},
+                {"speaker": "A", "start": 40.0, "end": 45.0, "text": "Hello?"},
+            ]
+        return [
+            {"speaker": "A", "start": 0.0, "end": 5.0, "text": "Do you need the police?"},
+            {"speaker": "narrator", "start": 5.0, "end": 20.0, "text": SINHALA},
+        ]
 
 
 def build_project(tmp_path, ai, seconds: float = 1.0, narrator_profile: dict | None = None):
@@ -566,3 +589,55 @@ def test_regenerating_a_kept_segment_recuts_it_without_model_calls(tmp_path):
     assert fresh["tts_audio_path"].endswith("0002_original_r02.wav")
     assert fresh["revision"] == 2 and fresh["qa_status"] == "needs_review"
     assert len(ai.synthesis_calls) + len(ai.adapt_calls) == calls_before
+
+
+def test_narration_pieces_are_transcribed_from_their_own_cut_not_the_chunk(tmp_path):
+    pipeline, db, project_id, job_id, ai, segments = run_recording_job(tmp_path)
+
+    assert segments[0]["source_audio_path"].endswith("0001_piece.wav")
+    assert segments[2]["source_audio_path"].endswith("0003_piece.wav")
+    assert segments[3]["source_audio_path"].endswith("0002_source.wav")  # untouched chunk keeps its file
+    assert [p.name for p in ai.transcribe_paths] == ["0001_piece.wav", "0003_piece.wav", "0002_source.wav"]
+    # Pieces are cut without padding so no recording audio bleeds into the narration transcript.
+    assert 19700 <= pipeline.audio.probe(Path(segments[0]["source_audio_path"])).duration_ms <= 20000
+
+
+def test_regenerating_the_segment_after_a_recording_skips_it_for_continuity(tmp_path):
+    pipeline, db, project_id, job_id, ai, segments = run_recording_job(tmp_path)
+
+    pipeline.regenerate_segment(segments[2]["id"], "adaptation")
+
+    assert ai.adapt_calls[-1]["previous_narration"] == segments[0]["narration_en"]
+    assert ai.synthesis_calls[-1]["previous_style"] == segments[0]["style"]
+
+
+def test_a_recording_across_a_chunk_boundary_is_joined_without_a_gap(tmp_path):
+    pipeline, db, project_id, job_id, ai, segments = run_recording_job(tmp_path, BoundaryFakeAI())
+    assert [s["kind"] for s in segments] == ["narration", "original", "original", "narration"]
+    assert segments[1]["end_ms"] == segments[2]["start_ms"] == 45000
+    captured = {}
+    real_assemble = pipeline.audio.assemble
+
+    def spy(paths, wav, mp3, gaps_ms=None):
+        captured["gaps"] = gaps_ms
+        real_assemble(paths, wav, mp3, gaps_ms)
+
+    pipeline.audio.assemble = spy
+
+    pipeline.assemble_project(project_id, job_id)
+
+    assert captured["gaps"] == [300, 0, 300]
+
+
+def test_a_failed_flip_to_original_cannot_be_assembled(tmp_path):
+    import pytest
+
+    pipeline, db, project_id, job_id, ai, segments = run_recording_job(tmp_path)
+    pipeline.audio.extract_levelled = lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("cut failed"))
+
+    pipeline.set_segment_kind(segments[2]["id"], "original")
+
+    fresh = db.one("SELECT * FROM segments WHERE id=?", (segments[2]["id"],))
+    assert fresh["status"] == "failed" and fresh["tts_audio_path"] is None
+    with pytest.raises(RuntimeError):
+        pipeline.assemble_project(project_id, job_id)
