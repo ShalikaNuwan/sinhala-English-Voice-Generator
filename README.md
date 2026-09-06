@@ -2,7 +2,7 @@
 
 A focused Phase 1 implementation of the supplied development specification. It converts long-form Sinhala narration into reviewable English narration through a segment-based pipeline:
 
-`upload → validate → normalize → analyse delivery → segment → Sinhala transcript → faithful translation → narration adaptation → TTS → QA → human review → assembly`
+`upload → validate → normalize → analyse delivery → find recordings → segment → Sinhala transcript → faithful translation → narration adaptation → TTS → QA → human review → assembly`
 
 The MVP is deliberately simple. It uses FastAPI, SQLite, local files, FastAPI background tasks, FFmpeg, and the OpenAI API. PostgreSQL, Redis, S3, LangGraph, authentication, and custom-voice enrollment are appropriate production upgrades, but are not required to prove the core workflow.
 
@@ -16,6 +16,9 @@ The MVP is deliberately simple. It uses FastAPI, SQLite, local files, FastAPI ba
 - configurable glossary, narrator profile, models, and standard TTS voice
 - speaking-pattern matching: the source narrator's pace, pause habits, and emotional tone are
   measured once per project and used to direct the English narration
+- embedded recordings (911 calls, interrogation tape, news clips) are detected by speaker
+  diarization against a narrator reference clip, kept from the source with loudness alignment,
+  and confirmed by the reviewer instead of being translated and re-voiced
 - segment-level model-call audit records with model, prompt version, input hash, and timestamps
 - text fidelity and duration-ratio QA
 - side-by-side transcript/script editing, segment-only regeneration, previews, and job progress
@@ -61,6 +64,8 @@ All model names are environment variables so deployment is not tied to a changin
 | `TTS_MODEL` | `gpt-4o-mini-tts` |
 | `TTS_VOICE` | `cedar` |
 | `TTS_SPEED` | `1.0` |
+| `DIARIZE_MODEL` | `gpt-4o-transcribe-diarize` |
+| `DETECT_RECORDINGS` | `1` |
 | `AUDIO_MODEL` | `gpt-audio` |
 | `DATA_DIR` | `./data` |
 | `MAX_AUDIO_MINUTES` | `120` |
@@ -78,6 +83,8 @@ For the first real evaluation, use a 2–5 minute representative recording with 
 - `PATCH /api/segments/{id}/transcript`
 - `PATCH /api/segments/{id}/script`
 - `POST /api/segments/{id}/regenerate`
+- `PATCH /api/segments/{id}/kind`  (`original` keeps the segment as recorded audio; `narration` voices it)
+- `POST /api/segments/{id}/confirm`  (accept a kept recording)
 - `POST /api/projects/{id}/assemble`
 - `GET /api/projects/{id}/export`
 
@@ -145,6 +152,34 @@ segment keeps its old script and old pause values.
 `scripts/listening_test.py` voices real segments from an existing job the old way and the new way and
 asks the audio model to say which sounds more human and why. It spends API credit; use it when tuning
 the persona or rules.
+
+## Embedded recordings
+
+Creator videos often play real evidence audio: a 911 call, an interrogation, a news clip. That audio
+must not be translated or re-voiced. Once per project the pipeline diarizes the delivery sample,
+takes the dominant speaker's longest span (2–10 s) as the narrator reference, and stores it in the
+speaking profile. Every chunk is then diarized with that reference. A recording starts at speech by
+someone other than the narrator in a Latin-only script and continues, across its own silences,
+until the narrator speaks again in Sinhala. Recordings under 1.5 s are ignored; kept ones are padded
+150 ms into silence.
+
+Each recording becomes its own segment of kind `original`. It skips transcription, translation,
+adaptation, and TTS; its audio is cut from the normalised source, brought to the narration's
+loudness with a static gain (measured first, so clips under three seconds are handled correctly),
+and given a 5 ms fade at each end; the narration that follows is told what was heard so it can
+refer to it. Original segments arrive on the review page as needs review with "Recorded audio kept
+as is. Confirm." Confirm them, or choose "Treat as narration" to voice one. A narration segment can
+be kept with "Keep as recorded". At assembly, the gap next to a recording is the 300 ms minimum. A
+recording that runs across a chunk boundary becomes two adjacent original segments.
+
+If diarization is unavailable the job continues as narration only and says so in the progress line.
+Independently, any narration segment whose transcript contains eight or more consecutive English
+words is flagged for review as a possible recording. `DETECT_RECORDINGS=0` (or `detect_recordings`
+on the process request) turns detection off. The narrator must be silent while a clip plays;
+speech over a clip is not separated.
+
+`scripts/end_to_end_check.py` runs the real pipeline on a slice of an existing project's source with
+the configured models and prints every segment's kind and text. It spends API credit.
 
 ## Production boundaries
 
