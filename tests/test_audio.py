@@ -1,4 +1,20 @@
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from app.audio import AudioError
 from app.audio import AudioService
+
+
+def tone(path: Path, seconds: float) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", f"sine=frequency=440:duration={seconds}",
+         "-ar", "24000", "-ac", "1", str(path)],
+        check=True,
+    )
+    return path
 
 
 def test_short_audio_is_one_segment():
@@ -20,3 +36,32 @@ def test_falls_back_to_safe_fixed_boundaries():
 
 def test_avoids_tiny_tail_for_continuous_one_minute_audio():
     assert AudioService.plan_segments(64_740, []) == [(0, 64_740)]
+
+
+def test_assembly_inserts_the_requested_silence_between_segments(tmp_path):
+    audio = AudioService()
+    parts = [tone(tmp_path / f"{i}.wav", 1.0) for i in range(3)]
+    wav = tmp_path / "out" / "final.wav"
+
+    audio.assemble(parts, wav, tmp_path / "out" / "final.mp3", gaps_ms=[500, 1000])
+
+    duration = audio.probe(wav).duration_ms
+    assert 4350 <= duration <= 4650  # 3 x 1000 ms of tone + 1500 ms of silence
+
+
+def test_assembly_without_gaps_is_unchanged(tmp_path):
+    audio = AudioService()
+    parts = [tone(tmp_path / f"{i}.wav", 1.0) for i in range(2)]
+    wav = tmp_path / "out" / "final.wav"
+
+    audio.assemble(parts, wav, tmp_path / "out" / "final.mp3")
+
+    assert 1900 <= audio.probe(wav).duration_ms <= 2100
+
+
+def test_assembly_rejects_a_gap_list_of_the_wrong_length(tmp_path):
+    audio = AudioService()
+    parts = [tone(tmp_path / f"{i}.wav", 1.0) for i in range(2)]
+
+    with pytest.raises(AudioError):
+        audio.assemble(parts, tmp_path / "final.wav", tmp_path / "final.mp3", gaps_ms=[500, 500])

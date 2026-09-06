@@ -119,18 +119,34 @@ class AudioService:
             created.append((start_ms, end_ms, output))
         return created
 
-    def assemble(self, segment_paths: list[Path], wav_path: Path, mp3_path: Path) -> None:
+    def assemble(
+        self,
+        segment_paths: list[Path],
+        wav_path: Path,
+        mp3_path: Path,
+        gaps_ms: list[int] | None = None,
+    ) -> None:
+        """Join the segments in order, leaving `gaps_ms[i]` of silence after segment i."""
         if not segment_paths:
             raise AudioError("No generated segments are available for assembly")
+        gaps = list(gaps_ms or [])
+        if gaps and len(gaps) != len(segment_paths) - 1:
+            raise AudioError("Assembly needs exactly one gap between each pair of segments")
         wav_path.parent.mkdir(parents=True, exist_ok=True)
         inputs: list[str] = []
         labels: list[str] = []
         for index, path in enumerate(segment_paths):
+            if index and gaps and gaps[index - 1] > 0:
+                inputs.extend([
+                    "-f", "lavfi", "-t", f"{gaps[index - 1] / 1000:.3f}",
+                    "-i", "anullsrc=r=24000:cl=mono",
+                ])
+                labels.append(f"[{len(labels)}:a]")
             inputs.extend(["-i", str(path)])
-            labels.append(f"[{index}:a]")
+            labels.append(f"[{len(labels)}:a]")
         self._run([
             self.ffmpeg, "-y", "-v", "error", *inputs,
-            "-filter_complex", f"{''.join(labels)}concat=n={len(segment_paths)}:v=0:a=1,loudnorm=I=-16:TP=-1.5:LRA=11[out]",
+            "-filter_complex", f"{''.join(labels)}concat=n={len(labels)}:v=0:a=1,loudnorm=I=-16:TP=-1.5:LRA=11[out]",
             "-map", "[out]", "-ar", "24000", str(wav_path),
         ])
         self._run([
