@@ -197,9 +197,8 @@ assembly gap is the only gap at a join. Speech itself is never stretched or re-l
 live at the top of `app/pauses.py`.
 
 QA records the pause profile of every shaped segment (count, median, 90th percentile, longest, per
-minute) and flags one whose longest pause exceeds the natural ceiling or that still has unpunctuated
-breaks over 200 ms. A pause the pipeline cannot tie to the script is left at its length, never
-shortened. If word timestamps fail, clear pauses are matched in order to the script's breaks; if that
+minute) and flags one whose longest pause exceeds the natural ceiling. A pause the pipeline cannot
+tie to the script is left at its length, never shortened. If word timestamps fail, clear pauses are matched in order to the script's breaks; if that
 does not line up either, the raw voice is kept and the job says so. `SHAPE_PAUSES=0` (or
 `shape_pauses` on the process request) turns shaping off.
 
