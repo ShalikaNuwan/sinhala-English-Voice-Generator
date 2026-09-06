@@ -92,3 +92,28 @@ def test_process_request_rejects_a_speed_outside_the_tts_range():
         ProcessRequest(speed=0.1)
     assert ProcessRequest(speed=0.25).speed == 0.25
     assert ProcessRequest(speed=4.0).speed == 4.0
+
+
+def test_job_configuration_enables_recording_detection_by_default():
+    from app.config import Settings
+    from app.main import job_configuration
+    from app.schemas import ProcessRequest
+
+    config = job_configuration(ProcessRequest(), Settings(openai_api_key="unused"))
+
+    assert config["diarize_model"] == "gpt-4o-transcribe-diarize"
+    assert config["detect_recordings"] is True
+
+
+def test_job_configuration_lets_a_request_turn_recording_detection_off():
+    from app.config import Settings
+    from app.main import job_configuration
+    from app.schemas import ProcessRequest
+
+    config = job_configuration(
+        ProcessRequest(detect_recordings=False, diarize_model="diarize-next"),
+        Settings(openai_api_key="unused"),
+    )
+
+    assert config["detect_recordings"] is False
+    assert config["diarize_model"] == "diarize-next"

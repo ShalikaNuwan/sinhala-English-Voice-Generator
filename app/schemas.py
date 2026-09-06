@@ -21,6 +21,8 @@ class ProcessRequest(BaseModel):
     voice: str | None = None
     # Same range as direction.SPEED_RANGE; kept literal so schemas stays import-free.
     speed: float | None = Field(default=None, ge=0.25, le=4.0)
+    diarize_model: str | None = None
+    detect_recordings: bool | None = None
     human_review_gate: bool = True
 
 
@@ -30,6 +32,10 @@ class TextUpdate(BaseModel):
 
 class RegenerateRequest(BaseModel):
     stage: Literal["translation", "adaptation", "tts", "qa"] = "tts"
+
+
+class KindUpdate(BaseModel):
+    kind: Literal["narration", "original"]
 
 
 class FaithfulTranslation(BaseModel):

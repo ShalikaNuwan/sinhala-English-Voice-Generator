@@ -38,6 +38,8 @@ def job_configuration(payload: ProcessRequest, config: Settings) -> dict:
         "audio_model": payload.audio_model or config.audio_model,
         "voice": payload.voice or config.tts_voice,
         "speed": payload.speed if payload.speed is not None else config.tts_speed,
+        "diarize_model": payload.diarize_model or config.diarize_model,
+        "detect_recordings": payload.detect_recordings if payload.detect_recordings is not None else config.detect_recordings,
         "human_review_gate": payload.human_review_gate,
     }
 
