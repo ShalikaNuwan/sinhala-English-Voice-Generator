@@ -37,6 +37,17 @@ def test_a_beat_before_a_blank_line_stays_a_beat():
     assert dict(pauses.script_tokens("Then silence…\n\nNothing.")) == {"then": "none", "silence": "beat", "nothing": "sentence"}
 
 
+def test_abbreviations_and_closers_are_classified_sensibly():
+    by_word = dict(pauses.script_tokens('Mr. Smith arrived at 4 a.m. and said, “Agitated.” Then… “Why?” wait- no.'))
+
+    assert by_word["mr"] == "none"
+    assert by_word["am"] == "none"
+    assert by_word["agitated"] == "sentence"
+    assert by_word["then"] == "beat"
+    assert by_word["why"] == "sentence"
+    assert by_word["wait"] == "dash"
+
+
 def test_normalise_keeps_letters_and_digits_only():
     assert pauses.normalise("“Gilbert.”") == "gilbert"
     assert pauses.normalise("4:51") == "451"
@@ -76,13 +87,13 @@ def test_classify_uses_the_last_word_ending_before_the_pause():
     assert classified == [(1.02, 1.9, "clause"), (2.95, 4.3, "sentence"), (5.3, 5.6, "sentence")]
 
 
-def test_classify_gives_none_to_an_unmapped_word():
+def test_classify_marks_an_unmapped_word_as_unknown():
     tokens = pauses.script_tokens("Hello there.")
     heard = spoken(("Goodbye", 0.0, 0.5), ("there", 0.9, 1.3))
 
     classified = pauses.classify([(0.5, 0.9)], heard, pauses.align(tokens, heard), tokens)
 
-    assert classified == [(0.5, 0.9, "none")]
+    assert classified == [(0.5, 0.9, "unknown")]
 
 
 def test_targets_fall_inside_the_scaled_band_and_are_reproducible():
@@ -111,6 +122,12 @@ def test_edges_are_trimmed_to_a_breath():
     plan = pauses.choose_targets([(0.0, 0.8, "none"), (4.5, 5.0, "sentence")], "moderate", random.Random(0), 5.0)
 
     assert [target for _, _, target in plan] == [pauses.EDGE_SILENCE_MS, pauses.EDGE_SILENCE_MS]
+
+
+def test_unknown_pauses_keep_their_length():
+    plan = pauses.choose_targets([(1.0, 1.8, "unknown")], "moderate", random.Random(0), 5.0)
+
+    assert plan == [(1.0, 1.8, 800)]
 
 
 def bursts(path: Path, pattern: list[tuple[float, float]]) -> Path:
@@ -158,6 +175,13 @@ def test_rebuild_sets_every_gap_to_its_target_and_leaves_speech_alone(tmp_path):
     assert abs(pauses._duration_s(tmp_path / "out.wav") - 4.31) < 0.03
 
 
+def test_rebuild_refuses_overlapping_pauses(tmp_path):
+    source = bursts(tmp_path / "in.wav", [(1.0, 0.9), (1.0, 0.5)])
+
+    with pytest.raises(RuntimeError, match="Overlapping"):
+        pauses.rebuild(source, [(1.0, 2.0, 200), (1.5, 3.0, 200)], 3.4, tmp_path / "out.wav")
+
+
 def test_profile_and_issues(tmp_path):
     path = bursts(tmp_path / "in.wav", [(1.0, 0.35), (1.0, 0.5), (1.0, 2.2), (1.0, 0.05)])
 
@@ -165,11 +189,16 @@ def test_profile_and_issues(tmp_path):
 
     assert profile["count"] == 3  # the 50 ms tail is below the detection floor
     assert profile["max_ms"] >= 2150
-    assert profile["micro"] == 0
     issues = pauses.profile_issues({"profile": profile, "unpunctuated_over_cap": 1, "pace": "moderate"})
     assert any("longest pause" in issue for issue in issues)
     assert any("unpunctuated" in issue for issue in issues)
-    assert pauses.profile_issues({"profile": {"max_ms": 900, "micro": 0}, "unpunctuated_over_cap": 0, "pace": "moderate"}) == []
+    assert pauses.profile_issues({"profile": {"max_ms": 900}, "unpunctuated_over_cap": 0, "pace": "moderate"}) == []
+
+
+def test_profile_of_a_file_without_pauses(tmp_path):
+    source = bursts(tmp_path / "solid.wav", [(2.0, 0.0)])
+
+    assert pauses.pause_profile(source) == {"count": 0, "median_ms": 0, "p90_ms": 0, "max_ms": 0, "per_minute": 0.0}
 
 
 def test_shape_end_to_end_with_word_timestamps(tmp_path):
@@ -193,6 +222,14 @@ def test_shape_end_to_end_with_word_timestamps(tmp_path):
     assert result["profile"]["count"] == 2
 
 
+def test_shape_refuses_when_too_few_words_align(tmp_path):
+    source = bursts(tmp_path / "raw.wav", [(1.0, 0.9), (1.0, 1.4), (1.0, 0.5)])
+    heard = spoken(("alpha", 0.0, 0.5), ("beta", 0.5, 1.0), ("gamma", 1.9, 2.4), ("part", 2.4, 2.9))
+
+    with pytest.raises(pauses.AlignmentError):
+        pauses.shape(source, "First part, second part. Third part.", heard, "moderate", tmp_path / "shaped.wav", seed="seg")
+
+
 def test_shape_falls_back_to_punctuation_order_without_timestamps(tmp_path):
     source = bursts(tmp_path / "raw.wav", [(1.0, 0.9), (1.0, 1.4), (1.0, 0.5)])
 
@@ -202,8 +239,20 @@ def test_shape_falls_back_to_punctuation_order_without_timestamps(tmp_path):
     assert result["classes"] == {"clause": 1, "sentence": 1, "edge": 1}
 
 
+def test_order_fallback_refuses_an_extra_pause(tmp_path):
+    source = bursts(tmp_path / "raw.wav", [(1.0, 0.9), (1.0, 1.4), (1.0, 0.9), (1.0, 0.5)])
+
+    with pytest.raises(pauses.AlignmentError):
+        pauses.shape(source, "First part, second part. Third part.", [], "moderate", tmp_path / "shaped.wav", seed="seg")
+
+
 def test_shape_refuses_when_nothing_lines_up(tmp_path):
     source = bursts(tmp_path / "raw.wav", [(1.0, 0.9), (1.0, 1.4), (1.0, 0.5)])
 
     with pytest.raises(pauses.AlignmentError):
         pauses.shape(source, "One sentence with no breaks at all", [], "moderate", tmp_path / "shaped.wav", seed="seg")
+
+
+def test_duration_failure_is_loud(tmp_path):
+    with pytest.raises(RuntimeError):
+        pauses._duration_s(tmp_path / "missing.wav")

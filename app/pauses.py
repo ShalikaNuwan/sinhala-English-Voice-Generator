@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import difflib
 import json
+import math
 import random
 import re
 import statistics
@@ -43,6 +44,9 @@ _NON_ALNUM = re.compile(r"[^0-9a-z]+")
 _CLOSERS = "\"'”’)]"
 _BREAK_ORDER = ["clause", "dash", "sentence", "paragraph", "beat"]
 
+_ABBREVIATIONS = {"mr", "mrs", "ms", "dr", "st", "jr", "sr", "vs", "etc", "eg", "ie", "am", "pm", "no"}
+_DOTTED = re.compile(r"^(?:[A-Za-z]\.)+$")  # a.m., U.S., J.
+
 
 class AlignmentError(RuntimeError):
     """The pauses could not be tied to the script; the raw audio should be kept."""
@@ -52,14 +56,25 @@ def normalise(word: str) -> str:
     return _NON_ALNUM.sub("", word.lower())
 
 
+def _is_abbreviation(raw: str) -> bool:
+    core = raw.rstrip(_CLOSERS)
+    if not core.endswith("."):
+        return False
+    if _DOTTED.match(core):
+        return True
+    return normalise(core) in _ABBREVIATIONS and not core.endswith("...")
+
+
 def _class_after(raw: str) -> str:
     stripped = raw.rstrip(_CLOSERS)
     if stripped in {"—", "–", "-"}:
         return "dash"
     if stripped.endswith("…") or stripped.endswith("..."):
         return "beat"
-    if stripped.endswith(("—", "–")):
+    if stripped.endswith(("—", "–", "-")):
         return "dash"
+    if _is_abbreviation(raw):
+        return "none"
     if stripped.endswith((".", "!", "?")):
         return "sentence"
     if stripped.endswith((",", ";", ":")):
@@ -91,6 +106,8 @@ def align(tokens: list[tuple[str, str]], spoken: list[dict]) -> dict[int, int]:
     mismatches between two matches filled in by position."""
     heard = [normalise(item.get("word") or "") for item in spoken]
     expected = [word for word, _ in tokens]
+    # A repeated word can match the wrong copy here; harmless, because a pause is only ever
+    # named by the word immediately before it, not by which occurrence it mapped to.
     matcher = difflib.SequenceMatcher(a=heard, b=expected, autojunk=False)
     mapping: dict[int, int] = {}
     for block in matcher.get_matching_blocks():
@@ -104,11 +121,18 @@ def align(tokens: list[tuple[str, str]], spoken: list[dict]) -> dict[int, int]:
 
 
 def _duration_s(path: Path, ffprobe: str = "ffprobe") -> float:
-    output = subprocess.run(
-        [ffprobe, "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(path)],
-        capture_output=True, text=True,
-    ).stdout.strip()
-    return float(output) if output else 0.0
+    try:
+        result = subprocess.run(
+            [ffprobe, "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(path)],
+            capture_output=True, text=True, check=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+        raise RuntimeError(f"Could not read duration of {path}") from exc
+    output = result.stdout.strip()
+    value = float(output) if output else 0.0
+    if value <= 0:
+        raise RuntimeError(f"Could not read duration of {path}")
+    return value
 
 
 def detect_pauses(path: Path, ffmpeg: str = "ffmpeg", ffprobe: str = "ffprobe") -> list[tuple[float, float]]:
@@ -135,7 +159,7 @@ def classify(
     result = []
     for start, end in pauses:
         preceding = [index for index, item in enumerate(spoken) if float(item.get("end") or 0) <= start + WORD_TOLERANCE_S]
-        cls = "none"
+        cls = "unknown"
         if preceding:
             token_index = mapping.get(preceding[-1])
             if token_index is not None:
@@ -170,6 +194,8 @@ def choose_targets(
         elif cls in BANDS:
             low, high = BANDS[cls]
             target = round(rng.uniform(low * scale, high * scale))
+        elif cls == "unknown":
+            target = current_ms
         else:
             target = min(current_ms, UNPUNCTUATED_MAX_MS)
         plan.append((start, end, target))
@@ -183,10 +209,14 @@ def rebuild(path: Path, plan: list[tuple[float, float, int]], duration_s: float,
     cursor = 0.0
 
     def speech(start: float, end: float) -> None:
-        if end - start <= 0.001:
+        run = end - start
+        if run <= 0.001:
             return
         label = f"[s{len(labels)}]"
-        parts.append(f"[0:a]atrim=start={start:.4f}:end={end:.4f},asetpts=PTS-STARTPTS{label}")
+        chain = f"[0:a]atrim=start={start:.4f}:end={end:.4f},asetpts=PTS-STARTPTS"
+        if run >= 0.02:
+            chain += f",afade=t=in:st=0:d=0.005,afade=t=out:st={max(0.0, run - 0.005):.4f}:d=0.005"
+        parts.append(f"{chain}{label}")
         labels.append(label)
 
     def silence(ms: int) -> None:
@@ -197,6 +227,8 @@ def rebuild(path: Path, plan: list[tuple[float, float, int]], duration_s: float,
         labels.append(label)
 
     for start, end, target in sorted(plan):
+        if start < cursor - 0.001:
+            raise RuntimeError(f"Overlapping pauses at {start:.3f}s")
         speech(cursor, start)
         silence(target)
         cursor = end
@@ -220,13 +252,12 @@ def pause_profile(path: Path, ffmpeg: str = "ffmpeg", ffprobe: str = "ffprobe") 
     interior = [(s, e) for s, e in detect_pauses(path, ffmpeg, ffprobe) if s > 0.005 and e < duration - 0.005]
     lengths = sorted(round((e - s) * 1000) for s, e in interior)
     if not lengths:
-        return {"count": 0, "median_ms": 0, "p90_ms": 0, "max_ms": 0, "micro": 0, "per_minute": 0.0}
+        return {"count": 0, "median_ms": 0, "p90_ms": 0, "max_ms": 0, "per_minute": 0.0}
     return {
         "count": len(lengths),
         "median_ms": round(statistics.median(lengths)),
-        "p90_ms": lengths[min(len(lengths) - 1, int(len(lengths) * 0.9))],
+        "p90_ms": lengths[max(0, math.ceil(0.9 * len(lengths)) - 1)],
         "max_ms": lengths[-1],
-        "micro": sum(1 for ms in lengths if ms < 300),
         "per_minute": round(len(lengths) / (duration / 60), 1) if duration else 0.0,
     }
 
@@ -256,11 +287,13 @@ def shape(
 ) -> dict:
     """Shape every pause of a voiced segment and return what was done and how it measures."""
     duration = _duration_s(path, ffprobe)
+    if duration <= 0:
+        raise RuntimeError(f"Could not read duration of {path}")
     found = detect_pauses(path, ffmpeg, ffprobe)
     tokens = script_tokens(script)
     if spoken:
         mapping = align(tokens, spoken)
-        if spoken and len(mapping) < max(1, len(spoken) // 2):
+        if len(mapping) < max(1, round(len(spoken) * 0.75)):
             raise AlignmentError(f"only {len(mapping)} of {len(spoken)} spoken words matched the script")
         classified = classify(found, spoken, mapping, tokens)
         method = "words"
