@@ -37,6 +37,7 @@ DEFAULT_GAP_MS = 600
 DEFAULT_MAX_GAP_MS = 2500
 # The TTS endpoint accepts speed 0.25-4.0.
 SPEED_RANGE = (0.25, 4.0)
+DEFAULT_SPEED = 1.0
 
 
 def _character(profile: dict) -> str | None:
@@ -128,7 +129,9 @@ def segment_gap_ms(previous_style: dict | None, next_style: dict | None, profile
     return max(MIN_GAP_MS, min(gap, ceiling))
 
 
-def speaking_speed(requested: float) -> float:
+def speaking_speed(requested: float | None) -> float:
     """Clamp a configured speed to what the API accepts."""
+    if requested is None:
+        requested = DEFAULT_SPEED
     low, high = SPEED_RANGE
     return min(high, max(low, float(requested)))

@@ -195,3 +195,7 @@ def test_gap_floor_wins_over_an_implausibly_short_longest_pause():
 def test_speed_boundaries_are_inclusive():
     assert direction.speaking_speed(0.25) == 0.25
     assert direction.speaking_speed(4.0) == 4.0
+
+
+def test_speed_defaults_when_no_speed_was_configured():
+    assert direction.speaking_speed(None) == direction.DEFAULT_SPEED

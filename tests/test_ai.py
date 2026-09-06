@@ -90,7 +90,10 @@ def test_adaptation_asks_for_a_spoken_performance_script_with_previous_context()
 
     system = captured["input"][0]["content"]
     user = captured["input"][1]["content"]
-    assert "spoken" in system.lower() or "speak" in system.lower()
+    # Every structured field the schema demands must be explained to the model.
+    for name in NarrationAdaptation.model_fields:
+        assert name in system, name
+    assert "No stage directions" in system
     assert "ellipsis" in system.lower()
     assert "beat" in system.lower() and "delivery" in system.lower()
     assert "Do not add, remove, weaken, or strengthen" in system
@@ -140,3 +143,78 @@ def test_synthesis_sends_the_brief_speed_and_wav_format(tmp_path):
     assert captured["instructions"] == direction.build_instructions(style, None, previous, None)
     assert captured["path"] == output
     assert output.parent.exists()
+
+
+def test_adaptation_works_with_three_positional_arguments_and_omits_empty_context():
+    captured = {}
+
+    class Responses:
+        def parse(self, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(output_parsed=NarrationAdaptation(narration_text="ok"))
+
+    ai = AIClient.__new__(AIClient)
+    ai.client = SimpleNamespace(responses=Responses())
+
+    ai.adapt("She was found dead.", "text-model", {})
+
+    user = captured["input"][1]["content"]
+    assert "Previous narration" not in user
+    assert "She was found dead." in user
+
+
+def test_synthesis_clamps_speed_and_opens_with_the_persona(tmp_path):
+    from app import direction
+
+    captured = {}
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def stream_to_file(self, path):
+            captured["path"] = path
+
+    class Speech:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            return Response()
+
+    ai = AIClient.__new__(AIClient)
+    ai.client = SimpleNamespace(
+        audio=SimpleNamespace(speech=SimpleNamespace(with_streaming_response=Speech()))
+    )
+
+    ai.synthesize("Hello.", "tts-model", "cedar", {}, tmp_path / "x.wav", speed=9.0)
+
+    assert captured["speed"] == 4.0
+    assert captured["instructions"].startswith(direction.DEFAULT_PERSONA[:40])
+
+
+def test_qa_accepts_spoken_renderings_of_dates_and_numbers():
+    from app.schemas import QAEvaluation
+
+    captured = {}
+
+    class Responses:
+        def parse(self, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(output_parsed=QAEvaluation(passed=True))
+
+    ai = AIClient.__new__(AIClient)
+    ai.client = SimpleNamespace(responses=Responses())
+
+    ai.evaluate("At 4:51 a.m.", "At 4:51 in the morning.", "qa-model")
+
+    system = captured["input"][0]["content"]
+    assert "4:51 in the morning" in system
+    assert "style, not meaning" in system
+
+
+def test_the_legacy_instruction_builder_is_gone():
+    import app.ai
+
+    assert not hasattr(app.ai, "narration_instructions")
