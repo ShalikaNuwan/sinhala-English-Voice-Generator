@@ -78,3 +78,17 @@ def test_job_configuration_lets_a_request_override_the_voice_and_audio_model():
     assert config["voice"] == "ballad"
     assert config["audio_model"] == "gpt-audio-mini"
     assert config["speed"] == 0.9
+
+
+def test_process_request_rejects_a_speed_outside_the_tts_range():
+    import pytest
+    from pydantic import ValidationError
+
+    from app.schemas import ProcessRequest
+
+    with pytest.raises(ValidationError):
+        ProcessRequest(speed=5.0)
+    with pytest.raises(ValidationError):
+        ProcessRequest(speed=0.1)
+    assert ProcessRequest(speed=0.25).speed == 0.25
+    assert ProcessRequest(speed=4.0).speed == 4.0
