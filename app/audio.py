@@ -116,11 +116,14 @@ class AudioService:
 
     def _loudness(self, source: Path, start_ms: int, end_ms: int) -> dict:
         """Measure a cut so loudness can be applied as a static gain; single-pass loudnorm is a no-op under 3 s."""
-        result = subprocess.run([
-            self.ffmpeg, "-hide_banner", "-nostats",
-            "-ss", f"{start_ms / 1000:.3f}", "-to", f"{end_ms / 1000:.3f}", "-i", str(source),
-            "-af", "loudnorm=I=-16:TP=-1.5:LRA=11:print_format=json", "-f", "null", "-",
-        ], capture_output=True, text=True)
+        try:
+            result = subprocess.run([
+                self.ffmpeg, "-hide_banner", "-nostats",
+                "-ss", f"{start_ms / 1000:.3f}", "-to", f"{end_ms / 1000:.3f}", "-i", str(source),
+                "-af", "loudnorm=I=-16:TP=-1.5:LRA=11:print_format=json", "-f", "null", "-",
+            ], capture_output=True, text=True)
+        except FileNotFoundError as exc:
+            raise AudioError(f"Required program is missing: {self.ffmpeg}") from exc
         match = re.search(r"\{[^{}]*\"input_i\"[^{}]*\}", result.stderr, re.S)
         if result.returncode != 0 or not match:
             raise AudioError((result.stderr or "Loudness measurement failed")[-1200:])
