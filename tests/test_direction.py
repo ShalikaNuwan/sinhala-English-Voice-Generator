@@ -101,8 +101,70 @@ def test_direction_note_is_hedged_and_terminated():
     assert "Emphasise: x." in text
 
 
+def test_direction_note_keeps_its_own_terminal_punctuation():
+    hangs = direction.build_instructions({"delivery": "Let the last line hang..."}, None)
+    asks = direction.build_instructions({"delivery": "Who would do that?"}, None)
+
+    assert "within the rules above: Let the last line hang..." in hangs
+    assert "hang...." not in hangs
+    assert "within the rules above: Who would do that?" in asks
+    assert "that?." not in asks
+
+
+def test_brief_fills_gaps_in_a_partial_profile():
+    text = direction.build_instructions({}, {"derived": {"pace": None}, "measured": {"mean_pause_ms": 900}})
+
+    assert "Baseline pace is moderate, with deliberate pauses and controlled delivery." in text
+    assert "the longest pause is about 900ms" in text
+
+
 def test_brief_uses_a_project_persona_when_one_is_given():
     text = direction.build_instructions(STYLE, PROFILE, persona="You are a calm history lecturer.")
 
     assert text.startswith("You are a calm history lecturer.")
     assert direction.DEFAULT_PERSONA not in text
+
+
+MEASURED_PROFILE = {"measured": {"mean_pause_ms": 773, "longest_pause_ms": 2732}}
+
+
+def test_gap_is_the_pause_after_plus_the_pause_before():
+    gap = direction.segment_gap_ms({"pause_after_ms": 800}, {"pause_before_ms": 400}, MEASURED_PROFILE)
+
+    assert gap == 1200
+
+
+def test_gap_falls_back_to_the_source_narrators_mean_pause_when_styles_say_nothing():
+    gap = direction.segment_gap_ms({"pause_after_ms": 0}, {"pause_before_ms": 0}, MEASURED_PROFILE)
+
+    assert gap == 773
+
+
+def test_gap_falls_back_to_a_default_without_a_profile():
+    assert direction.segment_gap_ms({}, {}, None) == direction.DEFAULT_GAP_MS
+    assert direction.segment_gap_ms(None, None, {"measured": {"mean_pause_ms": 0}}) == direction.DEFAULT_GAP_MS
+
+
+def test_gap_never_drops_below_the_minimum():
+    gap = direction.segment_gap_ms({"pause_after_ms": 100}, {"pause_before_ms": 50}, MEASURED_PROFILE)
+
+    assert gap == direction.MIN_GAP_MS
+
+
+def test_gap_never_exceeds_the_source_narrators_longest_pause():
+    gap = direction.segment_gap_ms({"pause_after_ms": 3000}, {"pause_before_ms": 3000}, MEASURED_PROFILE)
+
+    assert gap == 2732
+
+
+def test_gap_uses_the_default_ceiling_without_a_measured_longest_pause():
+    gap = direction.segment_gap_ms({"pause_after_ms": 3000}, {"pause_before_ms": 3000}, None)
+
+    assert gap == direction.DEFAULT_MAX_GAP_MS
+
+
+def test_speed_is_clamped_to_the_api_range():
+    assert direction.speaking_speed(1.0) == 1.0
+    assert direction.speaking_speed(0.92) == 0.92
+    assert direction.speaking_speed(0.1) == 0.25
+    assert direction.speaking_speed(9.0) == 4.0

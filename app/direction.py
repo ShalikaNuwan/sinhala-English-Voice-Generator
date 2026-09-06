@@ -28,6 +28,13 @@ DELIVERY_RULES = (
 DEFAULT_BEAT = "build"
 DEFAULT_EMOTION = "neutral"
 
+# Silence between assembled segments.
+MIN_GAP_MS = 300
+DEFAULT_GAP_MS = 600
+DEFAULT_MAX_GAP_MS = 2500
+# The TTS endpoint accepts speed 0.25-4.0.
+SPEED_RANGE = (0.25, 4.0)
+
 
 def _character(profile: dict) -> str | None:
     """Describe the original speaker so the English narrator can match them."""
@@ -60,8 +67,9 @@ def _moment(style: dict | None) -> str:
         f"{style.get('emotion') or DEFAULT_EMOTION} in tone, pace {style.get('pace') or 'moderate'}."
     )
     if style.get("delivery"):
-        note = str(style["delivery"])[:300].strip().rstrip(".")
-        text += f" Direction for this passage, within the rules above: {note}."
+        note = str(style["delivery"])[:300].strip()
+        terminal = "" if note[-1:] in ".!?…" else "."
+        text += f" Direction for this passage, within the rules above: {note}{terminal}"
     raw = style.get("emphasis") or []
     if isinstance(raw, str):
         raw = [raw]
@@ -95,3 +103,28 @@ def build_instructions(
     if previous_style:
         sections.append(_continuity(previous_style))
     return "\n\n".join(sections)
+
+
+def segment_gap_ms(previous_style: dict | None, next_style: dict | None, profile: dict | None) -> int:
+    """How much silence to leave between two assembled segments.
+
+    The adaptation model's pause fields win. When they say nothing, fall back to the source
+    narrator's measured mean pause, and never leave a gap longer than their longest pause.
+    """
+    previous_style = previous_style or {}
+    next_style = next_style or {}
+    measured = (profile or {}).get("measured") or {}
+
+    gap = int(previous_style.get("pause_after_ms") or 0) + int(next_style.get("pause_before_ms") or 0)
+    if gap == 0:
+        gap = int(measured.get("mean_pause_ms") or 0) or DEFAULT_GAP_MS
+
+    longest = int(measured.get("longest_pause_ms") or 0)
+    ceiling = max(longest, MIN_GAP_MS) if longest else DEFAULT_MAX_GAP_MS
+    return max(MIN_GAP_MS, min(gap, ceiling))
+
+
+def speaking_speed(requested: float) -> float:
+    """Clamp a configured speed to what the API accepts."""
+    low, high = SPEED_RANGE
+    return min(high, max(low, float(requested)))
