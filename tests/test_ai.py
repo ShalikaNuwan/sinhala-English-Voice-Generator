@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import get_args
 
 from app.ai import AIClient
+from app.schemas import NarrationAdaptation
 
 
 def test_transcription_prompts_for_sinhala_without_unsupported_language_code(tmp_path):
@@ -56,13 +58,18 @@ def test_delivery_description_sends_the_audio_and_ignores_word_meaning(tmp_path)
     assert base64.b64decode(audio_part["input_audio"]["data"]) == b"RIFFfake-audio-bytes"
 
 
-def test_adaptation_defaults_beat_and_delivery_when_the_model_omits_them():
-    from app.schemas import NarrationAdaptation
-
+def test_adaptation_has_documented_defaults_and_a_stable_style_contract():
     adaptation = NarrationAdaptation(narration_text="She never came home.")
 
     assert adaptation.beat == "build"
     assert adaptation.delivery == ""
-    assert adaptation.pause_after_ms == 0  # 0 means: use the narrator's usual gap at assembly
+    # 0 means: no specific request, use the narrator's usual gap at assembly.
+    assert adaptation.pause_before_ms == 0
+    assert adaptation.pause_after_ms == 0
+    # app/direction.py reads these keys from the stored style; the set must not drift.
     style = adaptation.model_dump(exclude={"narration_text"})
     assert set(style) == {"beat", "delivery", "pace", "emphasis", "pause_before_ms", "pause_after_ms", "emotion"}
+    # The adaptation prompt names these beats by hand; keep prompt and schema in sync.
+    assert set(get_args(NarrationAdaptation.model_fields["beat"].annotation)) == {
+        "setup", "build", "reveal", "aftermath", "reflection",
+    }

@@ -45,9 +45,13 @@ class NarrationAdaptation(BaseModel):
     )
     delivery: str = Field(
         default="",
+        max_length=300,
         description="One sentence of direction to the voice actor for this passage.",
     )
-    pace: Literal["slow", "moderate", "fast"] = "moderate"
+    pace: Literal["slow", "moderate", "fast"] = Field(
+        default="moderate",
+        description="How fast to speak this passage, relative to the narrator's baseline.",
+    )
     emphasis: list[str] = Field(
         default_factory=list,
         description="Exact phrases from narration_text to give weight to.",
