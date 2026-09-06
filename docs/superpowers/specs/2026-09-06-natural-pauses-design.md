@@ -42,7 +42,10 @@ result. The voice model still produces the speech; it no longer decides the sile
    words are aligned to script tokens with `difflib.SequenceMatcher` over normalised forms
    (lower-case, alphanumerics only), which tolerates the transcriber writing "1st" as "1". For each
    pause, the last spoken word ending no later than 150 ms after the pause start names the script
-   token; that token's class is the pause's class. A pause whose word is unmatched gets `none`.
+   token; that token's class is the pause's class. A pause with no preceding word or whose word is
+   unmatched is `unknown` and is left at its current length, never shortened. Abbreviations
+   (`Mr.`, `a.m.`, initials) are not sentence ends. A word ending in a hyphen is a dash break.
+   Shaping refuses (raw audio kept) when fewer than three quarters of the spoken words align.
 5. **Choose a target** for each pause: a uniform random draw inside the class band, scaled by the
    narrator's pace, using a random generator seeded by the segment id so a re-run is reproducible.
    A `none` pause is capped at `UNPUNCTUATED_MAX_MS` (kept if already shorter). Bands in ms:
@@ -58,12 +61,14 @@ result. The voice model still produces the speech; it no longer decides the sile
    Pace scale: `continuous` 0.85, `moderate` 1.0, `measured` 1.15 (from the speaking profile's
    derived pace). `UNPUNCTUATED_MAX_MS = 200`. Leading and trailing silence are trimmed to
    `EDGE_SILENCE_MS = 60` so the assembly gap is the only gap at a join.
-6. **Rebuild the audio** in one FFmpeg call: `atrim`/`asetpts` for every speech run, `aevalsrc=0`
-   for every gap, `concat`. Speech is never time-stretched or level-changed.
-7. **Measure the result** (`pause_profile`): per-class counts, median, 90th percentile, maximum,
-   micro-break rate. QA flags a segment when any pause exceeds the scaled `beat` band by more than
-   200 ms or when unpunctuated breaks over `UNPUNCTUATED_MAX_MS` remain, with the numbers in the
-   issue text.
+6. **Rebuild the audio** in one FFmpeg call: `atrim`/`asetpts` for every speech run with a 5 ms fade
+   at each end so a join never clicks, `aevalsrc=0` for every gap, `concat`. Speech is never
+   time-stretched or level-changed. Overlapping pauses or an unreadable duration are errors, never
+   silently dropped audio.
+7. **Measure the result** (`pause_profile`): count, median, 90th percentile, maximum, pauses per
+   minute; `shape` also returns the per-class counts. QA flags a segment when any pause exceeds the
+   scaled `beat` band by more than 200 ms or when unpunctuated breaks over `UNPUNCTUATED_MAX_MS`
+   remain, with the numbers in the issue text.
 
 If word timestamps cannot be obtained (API error, unsupported model), shaping falls back to
 punctuation-order alignment when the count of pauses of at least 250 ms equals the count of script
@@ -89,7 +94,8 @@ breaks; otherwise the raw audio is used unchanged and a job warning names the se
 - `classify(pauses, spoken, mapping, tokens) -> list[tuple[float, float, str]]`.
 - `choose_targets(classified, pace, rng) -> list[tuple[float, float, int]]` (target ms).
 - `rebuild(path, plan, duration_s, destination, ffmpeg) -> None`.
-- `pause_profile(path, ffmpeg) -> dict` and `profile_issues(profile, pace) -> list[str]`.
+- `pause_profile(path, ffmpeg) -> dict` and `profile_issues(result) -> list[str]` (takes the dict
+  `shape` returns).
 - `shape(path, script, spoken, pace, destination, seed, ffmpeg) -> dict` (returns the profile of the
   shaped file plus the plan for the record).
 
@@ -123,7 +129,7 @@ breaks; otherwise the raw audio is used unchanged and a job warning names the se
 |---|---|
 | Word-timestamp call fails | Punctuation-order fallback if counts match; else raw audio, warning. Job continues. |
 | No pauses detected | Audio used as is; profile recorded; no issue unless duration is silent. |
-| Alignment leaves a pause unmapped | Class `none`: capped, never lengthened. |
+| Alignment leaves a pause unmapped | Class `unknown`: left at its current length. |
 | Rebuild fails in FFmpeg | `AudioError`; segment marked failed as any TTS failure is. |
 | Shaping off (`SHAPE_PAUSES=0`) | Raw file used; no alignment call. |
 | Old rows | Unaffected; regeneration of an old segment shapes it. |
