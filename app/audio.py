@@ -22,6 +22,11 @@ class AudioInfo:
 # Chunks are cut with this much of their neighbours on each side so a boundary never clips a word.
 CHUNK_PAD_MS = 200
 
+# The polish a produced narration has and a raw voice file does not: light compression so the level
+# stops drifting mid-sentence, a mild de-esser, and a small top-end lift for clarity. Deliberately
+# gentle - it is meant to be inaudible as an effect. Loudness is applied separately, as a static gain.
+MASTER_CHAIN = "acompressor=threshold=-18dB:ratio=3:attack=5:release=120,deesser=i=0.4,treble=g=2.5:f=6500"
+
 
 class AudioService:
     def __init__(self, ffmpeg: str = "ffmpeg", ffprobe: str = "ffprobe"):
@@ -159,6 +164,36 @@ class AudioService:
             "-i", str(source), "-ac", "1", "-ar", "24000",
             "-af", ",".join(filters), str(destination),
         ])
+        return self.probe(destination)
+
+    def master(self, source: Path, destination: Path) -> AudioInfo:
+        """Give a voiced segment the polish of a produced narration, then bring it to the loudness target.
+
+        Tone first, level second: the compressor changes how loud the file is, so the gain has to be
+        measured from the already-compressed audio rather than from the raw voice. Loudness is applied
+        as a static gain for the same reason `extract_levelled` does it - loudnorm needs several seconds
+        of lookahead and a narration segment is often shorter than that. Silence is left alone so
+        make-up gain never lifts a quiet passage into audible hiss.
+        """
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        toned = destination.parent / f".{destination.stem}_toned.wav"
+        try:
+            self._run([
+                self.ffmpeg, "-y", "-v", "error", "-i", str(source),
+                "-ac", "1", "-ar", "24000", "-af", MASTER_CHAIN, str(toned),
+            ])
+            measured = self._loudness(toned, 0, self.probe(toned).duration_ms)
+            input_i = float(measured.get("input_i", "-inf"))
+            if input_i <= -70:  # leave silence alone
+                toned.replace(destination)
+                return self.probe(destination)
+            gain_db = min(-16 - input_i, -1.5 - float(measured["input_tp"]))
+            self._run([
+                self.ffmpeg, "-y", "-v", "error", "-i", str(toned),
+                "-ac", "1", "-ar", "24000", "-af", f"volume={gain_db:.2f}dB", str(destination),
+            ])
+        finally:
+            toned.unlink(missing_ok=True)
         return self.probe(destination)
 
     @staticmethod

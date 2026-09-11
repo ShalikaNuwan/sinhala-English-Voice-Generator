@@ -151,7 +151,13 @@ $("create").onclick = async () => {
   if (!file) return alert("Choose an audio file first.");
   $("create").disabled = true; $("create-status").textContent = "Creating project…";
   try {
-    const project = await request("/api/projects", jsonOptions("POST", {title:$("title").value, topic:$("topic").value, glossary:parseGlossary($("glossary").value)}));
+    const persona = $("persona").value.trim();
+    const project = await request("/api/projects", jsonOptions("POST", {
+      title:$("title").value,
+      topic:$("topic").value,
+      glossary:parseGlossary($("glossary").value),
+      narrator_profile: persona ? {persona} : {},
+    }));
     const form = new FormData(); form.append("file", file);
     $("create-status").textContent = "Uploading and validating audio…";
     await request(`/api/projects/${project.id}/upload`, {method:"POST", body:form});

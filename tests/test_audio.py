@@ -194,3 +194,55 @@ def test_split_pads_every_chunk_but_the_first_at_the_front(tmp_path):
     assert 45150 <= first <= 45250  # 200 ms of padding after only
     assert 20150 <= second <= 20250  # 200 ms before, none after (end of file)
     assert AudioService.chunk_lead_ms(0) == 0 and AudioService.chunk_lead_ms(45000) == 200
+
+
+def quiet_tone(path: Path, seconds: float, gain_db: int) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", f"sine=frequency=440:duration={seconds}",
+         "-af", f"volume={gain_db}dB", "-ar", "24000", "-ac", "1", str(path)],
+        check=True,
+    )
+    return path
+
+
+def test_master_preserves_duration(tmp_path):
+    """The QA duration ratio is measured after mastering, so mastering must not change length."""
+    audio = AudioService()
+    source = tone(tmp_path / "voice.wav", 4.0)
+
+    info = audio.master(source, tmp_path / "out" / "voice.wav")
+
+    assert 3950 <= info.duration_ms <= 4050
+
+
+def test_master_brings_a_quiet_voice_up_to_the_loudness_target(tmp_path):
+    audio = AudioService()
+    source = quiet_tone(tmp_path / "quiet.wav", 5.0, -30)
+
+    audio.master(source, tmp_path / "out" / "quiet.wav")
+
+    assert mean_volume_db(tmp_path / "out" / "quiet.wav", 0.5, 4.5) > -25
+
+
+def test_master_leaves_silence_silent(tmp_path):
+    """Compression plus make-up gain must not lift a silent clip into audible noise."""
+    audio = AudioService()
+    source = tmp_path / "silence.wav"
+    subprocess.run(
+        ["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-t", "3", "-i", "anullsrc=r=24000:cl=mono", str(source)],
+        check=True,
+    )
+
+    audio.master(source, tmp_path / "out" / "silent.wav")
+
+    assert mean_volume_db(tmp_path / "out" / "silent.wav", 0.5, 2.5) < -60
+
+
+def test_master_keeps_the_pipeline_audio_format(tmp_path):
+    audio = AudioService()
+    source = tone(tmp_path / "voice.wav", 2.0)
+
+    info = audio.master(source, tmp_path / "out" / "voice.wav")
+
+    assert info.channels == 1 and info.sample_rate == 24000

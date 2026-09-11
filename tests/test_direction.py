@@ -198,3 +198,11 @@ def test_speed_boundaries_are_inclusive():
 
 def test_speed_defaults_when_no_speed_was_configured():
     assert direction.speaking_speed(None) == direction.DEFAULT_SPEED
+
+
+def test_brief_asks_for_a_constant_level_not_a_fade_to_quiet():
+    """A documentary read holds one level; the old brief asked the voice to shrink, which read as urgency."""
+    text = direction.build_instructions(STYLE, PROFILE).lower()
+
+    assert "constant" in text or "steady" in text
+    assert "getting quieter" not in text

@@ -42,6 +42,7 @@ def job_configuration(payload: ProcessRequest, config: Settings) -> dict:
         "detect_recordings": payload.detect_recordings if payload.detect_recordings is not None else config.detect_recordings,
         "align_model": payload.align_model or config.align_model,
         "shape_pauses": payload.shape_pauses if payload.shape_pauses is not None else config.shape_pauses,
+        "master_voice": payload.master_voice if payload.master_voice is not None else config.master_voice,
         "human_review_gate": payload.human_review_gate,
     }
 

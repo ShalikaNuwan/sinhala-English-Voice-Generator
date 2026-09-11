@@ -910,3 +910,70 @@ def test_a_rebuild_failure_keeps_the_raw_voice_and_the_job_continues(tmp_path, m
     segment = db.one("SELECT * FROM segments WHERE project_id=?", (project_id,))
     assert measured_gaps(Path(segment["tts_audio_path"])) == pytest.approx([900, 1400], abs=40)
     assert "pauses" not in segment["qa"]
+
+
+def peak_volume_db(path: Path) -> float:
+    """Peak, not mean: a shaped segment carries inserted silence that drags any average down."""
+    import re as _re
+    result = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-nostats", "-i", str(path), "-af", "volumedetect", "-f", "null", "-"],
+        capture_output=True, text=True,
+    )
+    match = _re.search(r"max_volume:\s*(-?[0-9.]+) dB", result.stderr)
+    assert match, result.stderr
+    return float(match.group(1))
+
+
+class QuietFakeAI(FakeAI):
+    """Voices at -20 dB, well below the narration target, so mastering's gain is unmistakable."""
+
+    def synthesize(self, _text, _model, _voice, _style, output_path: Path, profile=None,
+                   previous_style=None, persona=None, speed=1.0):
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+             "-af", "volume=-20dB", str(output_path)],
+            check=True,
+        )
+
+
+def run_one_segment_job(tmp_path, monkeypatch, job_extras: dict) -> Path:
+    """Run the fake pipeline over a one-segment source and return the voiced segment file."""
+    data_dir = tmp_path / "data"
+    config = Settings(data_dir=data_dir, database_path=data_dir / "app.db", openai_api_key="not-used")
+    db = Database(config.database_path)
+    db.initialize()
+    project_id, job_id = str(uuid.uuid4()), str(uuid.uuid4())
+    source = data_dir / "projects" / project_id / "original" / "source.wav"
+    source.parent.mkdir(parents=True)
+    create_source(source)
+    now = utc_now()
+    db.execute(
+        "INSERT INTO projects(id,title,topic,glossary_json,narrator_profile_json,status,source_path,created_at,updated_at) "
+        "VALUES(?,?,?,?,?,?,?,?,?)",
+        (project_id, "Test", "History", "{}", "{}", "uploaded", str(source), now, now),
+    )
+    job_config = {"stt_model": "fake-stt", "text_model": "fake-text", "qa_model": "fake-qa",
+                  "tts_model": "fake-tts", "voice": "fake", "human_review_gate": True, **job_extras}
+    db.execute(
+        "INSERT INTO jobs(id,project_id,status,stage,progress,config_json,created_at) VALUES(?,?,?,?,?,?,?)",
+        (job_id, project_id, "queued", "queued", 0, json.dumps(job_config), now),
+    )
+    pipeline = Pipeline(db, config)
+    monkeypatch.setattr(pipeline, "_ai", lambda: QuietFakeAI())
+    pipeline.process_job(job_id)
+    segment = db.one("SELECT * FROM segments WHERE job_id=?", (job_id,))
+    return Path(segment["tts_audio_path"])
+
+
+def test_voiced_narration_is_mastered_to_the_loudness_target(tmp_path, monkeypatch):
+    """The fake voice is 35 dB down; mastering must bring it up to the narration target."""
+    voiced = run_one_segment_job(tmp_path, monkeypatch, {})
+
+    assert peak_volume_db(voiced) > -20
+
+
+def test_mastering_can_be_turned_off(tmp_path, monkeypatch):
+    voiced = run_one_segment_job(tmp_path, monkeypatch, {"master_voice": False})
+
+    assert peak_volume_db(voiced) < -30

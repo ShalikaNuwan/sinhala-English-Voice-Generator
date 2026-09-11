@@ -68,6 +68,7 @@ All model names are environment variables so deployment is not tied to a changin
 | `DETECT_RECORDINGS` | `1` |
 | `ALIGN_MODEL` | `whisper-1` |
 | `SHAPE_PAUSES` | `1` |
+| `MASTER_VOICE` | `1` |
 | `AUDIO_MODEL` | `gpt-audio` |
 | `DATA_DIR` | `./data` |
 | `MAX_AUDIO_MINUTES` | `120` |
@@ -122,14 +123,16 @@ to real output.
 
 Every TTS call is directed with one brief, built in `app/direction.py` from four parts:
 
-1. **Persona.** A fixed intimate true-crime storyteller: one real person telling one listener about a
-   case that actually happened. A project can replace it by putting a `persona` string in its
-   `narrator_profile` when the project is created. Non-string values are ignored.
+1. **Persona.** A composed true-crime documentary narrator: reporting a case that really happened
+   rather than reliving it, mid-pitched and even, holding one steady level throughout. The new
+   project form has a Narrator persona box that replaces it; through the API it is a `persona`
+   string in `narrator_profile` at project creation. Non-string values are ignored.
 2. **Voice character.** The measured and described speaking profile of the original narrator.
-3. **How to speak.** Rules aimed at the usual synthetic tells: talk rather than read, end statements
-   low, breathe before long sentences, get quieter rather than louder for intensity while staying
-   fully intelligible, say names and dates carefully, report quoted speech rather than act it, sound
-   like someone talking rather than presenting.
+3. **How to speak.** Rules aimed at the usual synthetic tells: talk rather than read, hold one
+   constant level and pitch centre rather than swelling or shrinking, stay unhurried and never
+   urgent, end statements low, breathe before long sentences, say names and dates carefully, report
+   quoted speech in the same calm register rather than acting it, sound like someone talking rather
+   than presenting.
 4. **This passage and continuity.** The beat, emotion, director's note, and emphasis from the
    adaptation stage, plus the beat and emotion the previous passage ended on so the voice does not
    reset at segment boundaries. Regenerating a segment looks up its predecessor for the same reason.
@@ -149,6 +152,13 @@ ten times larger than the MP3 segments earlier versions produced.
 Projects processed before this change keep their old scripts, voice, and pause values. To hear the
 new narration on an existing project, run processing again; regenerating only the TTS stage of a
 segment keeps its old script and old pause values.
+
+`scripts/preview_voice.py [voice ...] [--text "..."] [--raw]` voices one short line in each voice
+named, through the same persona, delivery rules and mastering the pipeline uses, so a preview sounds
+like the real narration rather than a bare TTS read. With no voices it previews cedar, onyx and ash;
+`--raw` skips mastering so the polish can be judged against the unprocessed voice. Writes
+`data/voice_previews/<voice>.wav` plus `comparison.wav` with every take back to back. Use it to
+choose `TTS_VOICE` without running a whole job. It spends API credit: one synthesis call per voice.
 
 `scripts/listening_test.py` voices real segments from an existing job the old way and the new way and
 asks the audio model to say which sounds more human and why. It spends API credit; use it when tuning
@@ -204,6 +214,28 @@ does not line up either, the raw voice is kept and the job says so. `SHAPE_PAUSE
 
 `scripts/pause_listening_set.py <job_id> <segment_index...>` copies the raw and shaped files for
 chosen segments to `data/pause_listening/` with a pause table for each, for listening.
+
+## Voice mastering
+
+A voice file straight from the TTS API drifts in level within a sentence and across segments, which
+is most of what separates it from a produced narration. After a narration segment is voiced and its
+pauses are shaped, `AudioService.master` applies light compression, a mild de-esser and a small
+top-end lift, then brings the result to the same -16 LUFS target the rest of the pipeline uses.
+
+Tone is applied before level, because the compressor changes how loud the file is: the gain is
+measured from the already-compressed audio, then applied as a static `volume` filter for the same
+reason `extract_levelled` does it, since loudnorm needs several seconds of lookahead and a narration
+segment is often shorter than that. Silence is left alone so make-up gain never lifts a quiet
+passage into audible hiss. Mastering never changes a segment's length, so the QA duration ratio is
+unaffected.
+
+Only narration is mastered. A kept recording is never shaped, so it never reaches this step and
+keeps the loudness `extract_levelled` gave it, untouched by the tone shaping. A mastering failure
+costs the job nothing: the unmastered voice is kept and the job carries a warning. `MASTER_VOICE=0`
+(or `master_voice` on the process request) turns it off.
+
+The chain is deliberately gentle and is meant to be inaudible as an effect. It will not turn one
+vendor's voice into another's; it removes the level drift that reads as amateur.
 
 ## Production boundaries
 
