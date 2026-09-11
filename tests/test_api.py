@@ -185,6 +185,35 @@ def test_kind_and_confirm_endpoints(tmp_path, monkeypatch):
     assert client.post(f"/api/segments/{narration_id}/confirm").status_code == 409
 
 
+def test_approve_endpoint_passes_a_flagged_narration_segment(tmp_path, monkeypatch):
+    import json
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    import app.config
+    import app.main
+
+    importlib.reload(app.config)
+    module = importlib.reload(app.main)
+    from fastapi.testclient import TestClient
+
+    client = TestClient(module.app)
+    job_id, (narration_id, original_id) = seed_job_with_segments(module, ["narration", "original"])
+    module.db.execute(
+        "UPDATE segments SET qa_status='needs_review', status='needs_review', qa_json=? WHERE id=?",
+        (json.dumps({"passed": False, "issues": ["Duration ratio 0.42 is outside 0.55-1.45"]}), narration_id),
+    )
+
+    approved = client.post(f"/api/segments/{narration_id}/approve")
+
+    assert approved.status_code == 200
+    assert approved.json()["qa_status"] == "passed"
+    assert approved.json()["qa"]["issues"] == []
+    assert approved.json()["qa"]["overridden_issues"] == ["Duration ratio 0.42 is outside 0.55-1.45"]
+    # A kept recording is confirmed, never approved.
+    assert client.post(f"/api/segments/{original_id}/approve").status_code == 409
+
+
 def test_job_configuration_shapes_pauses_by_default():
     from app.config import Settings
     from app.main import job_configuration

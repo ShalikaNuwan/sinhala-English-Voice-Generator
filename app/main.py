@@ -238,6 +238,17 @@ def confirm_segment(segment_id: str) -> dict:
     return present_segment(require_segment(segment_id))
 
 
+@app.post("/api/segments/{segment_id}/approve")
+def approve_segment(segment_id: str) -> dict:
+    """The reviewer accepts a voiced segment despite the QA verdict."""
+    require_segment(segment_id)
+    try:
+        pipeline.approve_segment(segment_id)
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return present_segment(require_segment(segment_id))
+
+
 @app.post("/api/projects/{project_id}/assemble")
 def assemble_project(project_id: str) -> dict:
     require_project(project_id)

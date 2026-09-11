@@ -977,3 +977,68 @@ def test_mastering_can_be_turned_off(tmp_path, monkeypatch):
     voiced = run_one_segment_job(tmp_path, monkeypatch, {"master_voice": False})
 
     assert peak_volume_db(voiced) < -30
+
+
+def flag_for_review(db, segment_id: str, issues: list[str]) -> None:
+    """Put a narration segment in the state a reviewer actually meets: voiced, but QA unhappy."""
+    db.execute(
+        "UPDATE segments SET qa_status='needs_review', status='needs_review', qa_json=? WHERE id=?",
+        (json.dumps({"passed": False, "issues": issues}), segment_id),
+    )
+
+
+def test_a_flagged_narration_segment_can_be_approved(tmp_path):
+    pipeline, db, project_id, job_id, ai, segments = run_recording_job(tmp_path)
+    flag_for_review(db, segments[0]["id"], ["Duration ratio 0.42 is outside 0.55-1.45"])
+
+    pipeline.approve_segment(segments[0]["id"])
+
+    fresh = db.one("SELECT * FROM segments WHERE id=?", (segments[0]["id"],))
+    assert fresh["qa_status"] == "passed" and fresh["status"] == "approved"
+
+
+def test_approving_keeps_the_overridden_issues_for_audit(tmp_path):
+    """A human override must not erase what QA objected to."""
+    pipeline, db, project_id, job_id, ai, segments = run_recording_job(tmp_path)
+    flag_for_review(db, segments[0]["id"], ["Duration ratio 0.42 is outside 0.55-1.45"])
+
+    pipeline.approve_segment(segments[0]["id"])
+
+    qa = db.one("SELECT * FROM segments WHERE id=?", (segments[0]["id"],))["qa"]
+    assert qa["passed"] is True
+    assert qa["approved"] is True
+    assert qa["overridden_issues"] == ["Duration ratio 0.42 is outside 0.55-1.45"]
+    assert qa["issues"] == []
+
+
+def test_approving_a_recording_is_refused(tmp_path):
+    """A kept recording is confirmed, not approved; keeping them separate keeps the audit honest."""
+    import pytest
+
+    pipeline, db, project_id, job_id, ai, segments = run_recording_job(tmp_path)
+
+    with pytest.raises(RuntimeError):
+        pipeline.approve_segment(segments[1]["id"])
+
+
+def test_a_narration_without_audio_cannot_be_approved(tmp_path):
+    import pytest
+
+    pipeline, db, project_id, job_id, ai, segments = run_recording_job(tmp_path)
+    db.execute("UPDATE segments SET tts_audio_path=NULL WHERE id=?", (segments[0]["id"],))
+
+    with pytest.raises(RuntimeError):
+        pipeline.approve_segment(segments[0]["id"])
+
+
+def test_regenerating_clears_an_earlier_approval(tmp_path):
+    """Approval is about the audio that was listened to; new audio must be judged again."""
+    pipeline, db, project_id, job_id, ai, segments = run_recording_job(tmp_path)
+    flag_for_review(db, segments[0]["id"], ["Duration ratio 0.42 is outside 0.55-1.45"])
+    pipeline.approve_segment(segments[0]["id"])
+
+    pipeline.regenerate_segment(segments[0]["id"], "tts")
+
+    qa = db.one("SELECT * FROM segments WHERE id=?", (segments[0]["id"],))["qa"]
+    assert not qa.get("approved")
+    assert not qa.get("overridden_issues")
