@@ -62,7 +62,8 @@ async function refreshJob() {
   const job = await request(`/api/jobs/${currentJob}`);
   $("progress").classList.remove("hidden");
   $("progress-bar").style.width = `${job.progress}%`;
-  $("progress-text").textContent = `${job.stage} · ${job.progress}%${job.error ? ` · ${job.error}` : ""}`;
+  const warnings = (job.warnings || []).length ? ` · ${job.warnings.join(" · ")}` : "";
+  $("progress-text").textContent = `${job.stage} · ${job.progress}%${job.error ? ` · ${job.error}` : ""}${warnings}`;
   if (["queued","running"].includes(job.status)) {
     clearTimeout(pollTimer); pollTimer = setTimeout(refreshJob, 1800);
   } else {
@@ -70,36 +71,68 @@ async function refreshJob() {
   }
 }
 
-async function loadSegments() {
-  if (!currentJob) return;
-  const segments = await request(`/api/jobs/${currentJob}/segments`);
-  $("segments").innerHTML = segments.map(segment => `
-    <article class="segment" data-id="${segment.id}">
+function segmentCard(segment) {
+  const qa = `<span class="${segment.qa_status === "passed" ? "qa-pass" : "qa-review"}">${segment.qa_status}</span>`;
+  const issues = `<span class="muted">${escapeHtml((segment.qa?.issues || []).join(" · "))}</span>`;
+  const player = segment.tts_audio_url ? `<audio controls src="${segment.tts_audio_url}"></audio>` : "";
+  if (segment.kind === "original") {
+    return `
+    <article class="segment" data-id="${segment.id}" data-kind="original">
       <div class="segment-head"><strong>Segment ${segment.segment_index}</strong>
-        <span class="${segment.qa_status === "passed" ? "qa-pass" : "qa-review"}">${segment.qa_status}</span></div>
+        <span class="pill">Recorded audio, kept as is</span>${qa}</div>
+      <p class="muted">${escapeHtml(segment.transcript_si || "(no speech recognised in this recording)")}</p>
+      ${player}
+      <div class="actions">
+        ${segment.tts_audio_url ? '<button class="confirm">Confirm recording</button>' : '<button class="regen secondary">Cut the recording again</button>'}
+        <button class="to-narration secondary">Treat as narration</button>
+        ${issues}
+      </div>
+    </article>`;
+  }
+  return `
+    <article class="segment" data-id="${segment.id}" data-kind="narration">
+      <div class="segment-head"><strong>Segment ${segment.segment_index}</strong>${qa}</div>
       <div class="segment-grid">
         <label>Sinhala transcript<textarea class="si">${escapeHtml(segment.transcript_si || "")}</textarea></label>
         <label>English narration<textarea class="en">${escapeHtml(segment.narration_en || "")}</textarea></label>
       </div>
-      ${segment.tts_audio_url ? `<audio controls src="${segment.tts_audio_url}"></audio>` : ""}
+      ${player}
       <div class="actions">
         <button class="save secondary">Save edits</button>
         <button class="regen">Regenerate this segment</button>
-        <span class="muted">${escapeHtml((segment.qa?.issues || []).join(" · "))}</span>
+        <button class="to-original secondary">Keep as recorded</button>
+        ${issues}
       </div>
-    </article>`).join("");
+    </article>`;
+}
+
+async function loadSegments() {
+  if (!currentJob) return;
+  const segments = await request(`/api/jobs/${currentJob}/segments`);
+  $("segments").innerHTML = segments.map(segmentCard).join("");
   document.querySelectorAll(".segment").forEach(card => {
-    card.querySelector(".save").onclick = async () => {
-      const id = card.dataset.id;
+    const id = card.dataset.id;
+    const later = (ms) => setTimeout(loadSegments, ms);
+    card.querySelector(".save")?.addEventListener("click", async () => {
       await request(`/api/segments/${id}/transcript`, jsonOptions("PATCH", {text:card.querySelector(".si").value}));
       await request(`/api/segments/${id}/script`, jsonOptions("PATCH", {text:card.querySelector(".en").value}));
-      card.querySelector(".qa-review").textContent = "pending";
-    };
-    card.querySelector(".regen").onclick = async () => {
-      await request(`/api/segments/${card.dataset.id}/regenerate`, jsonOptions("POST", {stage:"tts"}));
-      card.querySelector(".regen").textContent = "Regenerating…";
-      setTimeout(loadSegments, 2500);
-    };
+      card.querySelector(".qa-review, .qa-pass").textContent = "pending";
+    });
+    card.querySelector(".regen")?.addEventListener("click", async () => {
+      await request(`/api/segments/${id}/regenerate`, jsonOptions("POST", {stage:"tts"}));
+      card.querySelector(".regen").textContent = "Regenerating…"; later(2500);
+    });
+    const guarded = (action) => async () => { try { await action(); } catch (error) { alert(error.message); } };
+    card.querySelector(".to-original")?.addEventListener("click", guarded(async () => {
+      await request(`/api/segments/${id}/kind`, jsonOptions("PATCH", {kind:"original"})); later(1500);
+    }));
+    card.querySelector(".to-narration")?.addEventListener("click", guarded(async () => {
+      await request(`/api/segments/${id}/kind`, jsonOptions("PATCH", {kind:"narration"}));
+      card.querySelector(".to-narration").textContent = "Voicing…"; later(4000);
+    }));
+    card.querySelector(".confirm")?.addEventListener("click", guarded(async () => {
+      await request(`/api/segments/${id}/confirm`, {method:"POST"}); await loadSegments();
+    }));
   });
 }
 
@@ -118,7 +151,13 @@ $("create").onclick = async () => {
   if (!file) return alert("Choose an audio file first.");
   $("create").disabled = true; $("create-status").textContent = "Creating project…";
   try {
-    const project = await request("/api/projects", jsonOptions("POST", {title:$("title").value, topic:$("topic").value, glossary:parseGlossary($("glossary").value)}));
+    const persona = $("persona").value.trim();
+    const project = await request("/api/projects", jsonOptions("POST", {
+      title:$("title").value,
+      topic:$("topic").value,
+      glossary:parseGlossary($("glossary").value),
+      narrator_profile: persona ? {persona} : {},
+    }));
     const form = new FormData(); form.append("file", file);
     $("create-status").textContent = "Uploading and validating audio…";
     await request(`/api/projects/${project.id}/upload`, {method:"POST", body:form});

@@ -19,7 +19,19 @@ class Settings:
     text_model: str = field(default_factory=lambda: os.getenv("TEXT_MODEL", "gpt-5.6-terra"))
     qa_model: str = field(default_factory=lambda: os.getenv("QA_MODEL", "gpt-5.6-terra"))
     tts_model: str = field(default_factory=lambda: os.getenv("TTS_MODEL", "gpt-4o-mini-tts"))
-    tts_voice: str = field(default_factory=lambda: os.getenv("TTS_VOICE", "onyx"))
+    tts_voice: str = field(default_factory=lambda: os.getenv("TTS_VOICE", "cedar"))
+    tts_speed: float = field(default_factory=lambda: float(os.getenv("TTS_SPEED", "1.0")))
+    diarize_model: str = field(default_factory=lambda: os.getenv("DIARIZE_MODEL", "gpt-4o-transcribe-diarize"))
+    detect_recordings: bool = field(
+        default_factory=lambda: os.getenv("DETECT_RECORDINGS", "1").strip().lower() not in {"0", "false", "no"}
+    )
+    align_model: str = field(default_factory=lambda: os.getenv("ALIGN_MODEL", "whisper-1"))
+    shape_pauses: bool = field(
+        default_factory=lambda: os.getenv("SHAPE_PAUSES", "1").strip().lower() not in {"0", "false", "no"}
+    )
+    master_voice: bool = field(
+        default_factory=lambda: os.getenv("MASTER_VOICE", "1").strip().lower() not in {"0", "false", "no"}
+    )
     audio_model: str = field(default_factory=lambda: os.getenv("AUDIO_MODEL", "gpt-audio"))
     max_audio_minutes: int = field(default_factory=lambda: int(os.getenv("MAX_AUDIO_MINUTES", "120")))
     max_upload_mb: int = field(default_factory=lambda: int(os.getenv("MAX_UPLOAD_MB", "500")))

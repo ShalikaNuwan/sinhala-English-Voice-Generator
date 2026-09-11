@@ -12,7 +12,7 @@ from .audio import AudioError, AudioService
 from .config import Settings, settings
 from .database import Database, utc_now
 from .pipeline import Pipeline
-from .schemas import ProcessRequest, ProjectCreate, RegenerateRequest, TextUpdate
+from .schemas import KindUpdate, ProcessRequest, ProjectCreate, RegenerateRequest, TextUpdate
 
 
 ALLOWED_EXTENSIONS = {".wav", ".mp3", ".m4a", ".mp4", ".webm", ".ogg", ".flac"}
@@ -37,6 +37,12 @@ def job_configuration(payload: ProcessRequest, config: Settings) -> dict:
         "tts_model": payload.tts_model or config.tts_model,
         "audio_model": payload.audio_model or config.audio_model,
         "voice": payload.voice or config.tts_voice,
+        "speed": payload.speed if payload.speed is not None else config.tts_speed,
+        "diarize_model": payload.diarize_model or config.diarize_model,
+        "detect_recordings": payload.detect_recordings if payload.detect_recordings is not None else config.detect_recordings,
+        "align_model": payload.align_model or config.align_model,
+        "shape_pauses": payload.shape_pauses if payload.shape_pauses is not None else config.shape_pauses,
+        "master_voice": payload.master_voice if payload.master_voice is not None else config.master_voice,
         "human_review_gate": payload.human_review_gate,
     }
 
@@ -208,6 +214,28 @@ def regenerate_segment(segment_id: str, payload: RegenerateRequest, background: 
     db.execute("UPDATE segments SET status='regenerating', updated_at=? WHERE id=?", (utc_now(), segment_id))
     background.add_task(pipeline.regenerate_segment, segment_id, payload.stage)
     return {"segment_id": segment_id, "status": "regenerating", "stage": payload.stage}
+
+
+@app.patch("/api/segments/{segment_id}/kind", status_code=202)
+def update_segment_kind(segment_id: str, payload: KindUpdate, background: BackgroundTasks) -> dict:
+    """Keep a segment as recorded audio, or voice one that detection kept."""
+    require_segment(segment_id)
+    if payload.kind == "narration" and not settings.openai_api_key:
+        raise HTTPException(503, "OPENAI_API_KEY is not configured")
+    db.execute("UPDATE segments SET status='regenerating', updated_at=? WHERE id=?", (utc_now(), segment_id))
+    background.add_task(pipeline.set_segment_kind, segment_id, payload.kind)
+    return {"segment_id": segment_id, "kind": payload.kind, "status": "regenerating"}
+
+
+@app.post("/api/segments/{segment_id}/confirm")
+def confirm_segment(segment_id: str) -> dict:
+    """The reviewer accepts a kept recording."""
+    require_segment(segment_id)
+    try:
+        pipeline.confirm_segment(segment_id)
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return present_segment(require_segment(segment_id))
 
 
 @app.post("/api/projects/{project_id}/assemble")

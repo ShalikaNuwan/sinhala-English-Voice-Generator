@@ -5,46 +5,17 @@ from pathlib import Path
 
 from openai import OpenAI
 
+from .direction import build_instructions, speaking_speed
+from .recordings import NARRATOR
 from .schemas import FaithfulTranslation, NarrationAdaptation, QAEvaluation
 
 
-PROMPT_VERSION = "2026-09-mvp1"
+PROMPT_VERSION = "2026-09-mvp3"
 
 
-def narration_instructions(style: dict, profile: dict | None) -> str:
-    """Build the TTS direction: who the narrator is, then what this moment needs.
-
-    The profile describes the original speaker and stays constant across the project.
-    The style comes from the adaptation model and changes segment to segment.
-    """
-    lines = ["Natural English documentary narration."]
-
-    if profile:
-        derived = profile.get("derived") or {}
-        measured = profile.get("measured") or {}
-        described = profile.get("described")
-        character = ["Narrator character, matched to the original speaker:"]
-        if described:
-            character.append(described)
-        if derived:
-            character.append(
-                f"Baseline pace is {derived.get('pace', 'moderate')}, "
-                f"with {derived.get('pause_style', 'deliberate')} pauses and "
-                f"{derived.get('dynamics', 'controlled')} delivery."
-            )
-        if measured.get("mean_pause_ms"):
-            character.append(
-                f"Leave roughly {measured['mean_pause_ms']}ms between sentences, "
-                f"stretching to about {measured['longest_pause_ms']}ms at the most dramatic beats."
-            )
-        lines.append(" ".join(character))
-
-    emphasis = ", ".join(style.get("emphasis") or [])
-    moment = f"This passage: {style.get('emotion', 'neutral')} in tone, pace {style.get('pace', 'moderate')}."
-    if emphasis:
-        moment += f" Emphasise: {emphasis}."
-    lines.append(moment)
-    return " ".join(lines)
+def _field(item, name: str):
+    """Read a field from either an SDK object or a plain dict."""
+    return item.get(name) if isinstance(item, dict) else getattr(item, name, None)
 
 
 class AIClient:
@@ -66,6 +37,55 @@ class AIClient:
                 prompt=prompt[:1000],
             )
         return result.text.strip()
+
+    def diarize(self, audio_path: Path, model: str, reference_path: Path | None = None) -> list[dict]:
+        """Label who speaks when. With a reference clip, the narrator's spans are labelled NARRATOR.
+
+        The diarization model does not accept a prompt, so glossary terms are not passed.
+        """
+        extra: dict = {}
+        if reference_path is not None:
+            encoded = base64.b64encode(Path(reference_path).read_bytes()).decode("ascii")
+            extra = {
+                "known_speaker_names": [NARRATOR],
+                "known_speaker_references": [f"data:audio/wav;base64,{encoded}"],
+            }
+        with Path(audio_path).open("rb") as audio_file:
+            result = self.client.audio.transcriptions.create(
+                model=model,
+                file=audio_file,
+                response_format="diarized_json",
+                chunking_strategy="auto",
+                **extra,
+            )
+        return [
+            {
+                "speaker": _field(segment, "speaker"),
+                "start": float(_field(segment, "start") or 0.0),
+                "end": float(_field(segment, "end") or 0.0),
+                "text": _field(segment, "text") or "",
+            }
+            for segment in (_field(result, "segments") or [])
+        ]
+
+    def word_timestamps(self, audio_path: Path, model: str) -> list[dict]:
+        """When each word of a voiced segment is spoken, so pauses can be tied to the script."""
+        with Path(audio_path).open("rb") as audio_file:
+            result = self.client.audio.transcriptions.create(
+                model=model,
+                file=audio_file,
+                response_format="verbose_json",
+                timestamp_granularities=["word"],
+                language="en",
+            )
+        return [
+            {
+                "word": _field(item, "word") or "",
+                "start": float(_field(item, "start") or 0.0),
+                "end": float(_field(item, "end") or 0.0),
+            }
+            for item in (_field(result, "words") or [])
+        ]
 
     def translate(
         self,
@@ -106,23 +126,57 @@ class AIClient:
         faithful_en: str,
         model: str,
         narrator_profile: dict,
+        previous_narration: str = "",
     ) -> NarrationAdaptation:
+        context = ""
+        if previous_narration:
+            context = (
+                "Previous narration, for context only. Use it to know where you are in the story; "
+                f"do not repeat it and do not rewrite it:\n<<<\n{previous_narration}\n>>>\n"
+            )
+        user_content = (
+            f"Narrator profile: {narrator_profile}\n"
+            f"{context}"
+            f"Faithful English to adapt:\n<<<\n{faithful_en}\n>>>"
+        )
         response = self.client.responses.parse(
             model=model,
             input=[
                 {
                     "role": "system",
                     "content": (
-                        "Rewrite faithful English into natural spoken narration. Use the narrator profile. "
-                        "Do not add, remove, weaken, or strengthen factual claims. Preserve supported suspense "
-                        "and emphasis, and avoid formal written-English constructions. Collapse accidental "
-                        "repeated starts, duplicated phrases, and incomplete false starts, while preserving "
-                        "every distinct factual detail."
+                        "You turn faithful English into a script that a storyteller will speak aloud as the "
+                        "voice-over of a true-crime documentary. Write for the ear, not the page:\n"
+                        "- Short sentences, one idea each. Use contractions. Avoid formal written-English "
+                        "constructions.\n"
+                        "- Put an ellipsis (…) where the narrator should hold a beat, at most once per passage, and a dash "
+                        "(—) for a change of thought or an afterthought, at most twice. Use the characters … and — "
+                        "themselves, not ... or --, and only where a person telling the story would actually pause.\n"
+                        "- Start a new paragraph (blank line) only at a real shift in the story, at most twice per passage.\n"
+                        "- Write dates, times, and numbers the way they are said aloud, for example "
+                        "'May 1st, 2010' and '4:51 in the morning'.\n"
+                        "- Keep quoted speech from 911 calls and witnesses as plain spoken lines.\n"
+                        "- Collapse incomplete false starts and repetitions the speaker clearly did not intend.\n"
+                        "Hard limit, which overrides every rule above. Do not add, remove, weaken, or strengthen any "
+                        "factual claim. Preserve every distinct name, date, number, place, and causal link. If a rule "
+                        "above would cost you a detail or soften a hedge, break the rule and keep the fact. Preserve "
+                        "supported suspense and emphasis. Use the narrator profile.\n"
+                        "Always: narration_text is only the words to be spoken. No stage directions, no bracketed or "
+                        "parenthetical cues, no markdown, no headings, no speaker labels, no sound-effect notes. "
+                        "Every note about performance goes in the delivery field instead.\n"
+                        "Also return: beat (where this passage sits in the story: setup, build, reveal, aftermath, or "
+                        "reflection); delivery (one sentence of direction to the voice actor for this passage, under "
+                        "300 characters); emotion (the tone, in two or three words); pace; emphasis (two or three short "
+                        "phrases copied from narration_text character for character, never a paraphrase, never a phrase "
+                        "that is not in the script); and pause_before_ms and pause_after_ms (silence in milliseconds; "
+                        "your number is added to the neighbouring passage's request, and anything under 300 is treated "
+                        "as 300 and nothing exceeds the narrator's longest measured pause, so leave both at 0 unless this "
+                        "passage really needs a longer pause than the narrator's usual gap)."
                     ),
                 },
                 {
                     "role": "user",
-                    "content": f"Narrator profile: {narrator_profile}\nFaithful English: {faithful_en}",
+                    "content": user_content,
                 },
             ],
             text_format=NarrationAdaptation,
@@ -139,15 +193,19 @@ class AIClient:
         style: dict,
         output_path: Path,
         profile: dict | None = None,
+        previous_style: dict | None = None,
+        persona: str | None = None,
+        speed: float = 1.0,
     ) -> None:
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        instructions = narration_instructions(style, profile)
+        instructions = build_instructions(style, profile, previous_style, persona)
         with self.client.audio.speech.with_streaming_response.create(
             model=model,
             voice=voice,
             input=text,
             instructions=instructions,
-            response_format="mp3",
+            speed=speaking_speed(speed),
+            response_format="wav",
         ) as response:
             response.stream_to_file(output_path)
 
@@ -190,9 +248,12 @@ class AIClient:
                 {
                     "role": "system",
                     "content": (
-                        "Compare the faithful translation with the narration script. Identify omissions, "
-                        "additions, changed certainty, and incorrect entities, dates, numbers, locations, or "
-                        "causal relationships. Pass only when meaning is preserved."
+                        "Compare the faithful translation with the narration script. Identify omissions, additions, "
+                        "changed certainty, and incorrect entities, dates, numbers, locations, or causal relationships. "
+                        "Dates, times, and numbers written the way they are spoken ('4:51 in the morning' for "
+                        "'4:51 a.m.', 'May 1st, 2010' for '2010-05-01') are correct, not changes. Contractions, "
+                        "reordering within a sentence, and an ellipsis or dash used for pacing are style, not meaning. Pass only when "
+                        "meaning is preserved."
                     ),
                 },
                 {

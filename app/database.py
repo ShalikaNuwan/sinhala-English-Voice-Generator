@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     progress INTEGER NOT NULL DEFAULT 0,
     config_json TEXT NOT NULL DEFAULT '{}',
     error TEXT,
+    warnings_json TEXT NOT NULL DEFAULT '[]',
     started_at TEXT,
     completed_at TEXT,
     created_at TEXT NOT NULL
@@ -48,6 +49,7 @@ CREATE TABLE IF NOT EXISTS segments (
     start_ms INTEGER NOT NULL,
     end_ms INTEGER NOT NULL,
     source_audio_path TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'narration',
     transcript_si TEXT NOT NULL DEFAULT '',
     faithful_en TEXT NOT NULL DEFAULT '',
     narration_en TEXT NOT NULL DEFAULT '',
@@ -86,6 +88,8 @@ CREATE INDEX IF NOT EXISTS idx_segments_job ON segments(job_id, segment_index);
 # Columns added after the first release, applied to databases created before them.
 ADDED_COLUMNS = [
     ("projects", "speaking_profile_json", "TEXT NOT NULL DEFAULT '{}'"),
+    ("jobs", "warnings_json", "TEXT NOT NULL DEFAULT '[]'"),
+    ("segments", "kind", "TEXT NOT NULL DEFAULT 'narration'"),
 ]
 
 

@@ -23,6 +23,9 @@
       <label>Glossary <span>one item per line: Sinhala/name = preferred English</span>
         <textarea id="glossary" rows="4" placeholder="කොළඹ = Colombo&#10;OpenAI = OpenAI"></textarea>
       </label>
+      <label>Narrator persona <span>optional: who the English narrator is. Leave empty for the default documentary read.</span>
+        <textarea id="persona" rows="3" placeholder="You are the narrator of a true-crime documentary, recorded in a treated studio…"></textarea>
+      </label>
       <label>Audio file<input id="audio" type="file" accept="audio/*,video/mp4,video/webm"></label>
       <div class="actions">
         <button id="create">Create and upload</button>
@@ -36,7 +39,7 @@
         <span id="project-status" class="pill"></span>
       </div>
       <div class="actions">
-        <label class="inline">Voice<input id="voice" value="onyx"></label>
+        <label class="inline">Voice<input id="voice" value="cedar"></label>
         <button id="process">Start processing</button>
         <button id="assemble" class="secondary">Assemble reviewed audio</button>
       </div>
@@ -55,7 +58,7 @@
     </section>
   </main>
 
-  <footer>English audio is AI-generated. Review meaning, pronunciation, and pacing before publishing.</footer>
+  <footer>English narration is AI-generated; recordings marked "kept as is" are the original audio. Review meaning, pronunciation, and pacing before publishing.</footer>
   <script src="/static/app.js"></script>
 </body>
 </html>
