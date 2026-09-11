@@ -29,6 +29,9 @@ class Settings:
     shape_pauses: bool = field(
         default_factory=lambda: os.getenv("SHAPE_PAUSES", "1").strip().lower() not in {"0", "false", "no"}
     )
+    master_voice: bool = field(
+        default_factory=lambda: os.getenv("MASTER_VOICE", "1").strip().lower() not in {"0", "false", "no"}
+    )
     audio_model: str = field(default_factory=lambda: os.getenv("AUDIO_MODEL", "gpt-audio"))
     max_audio_minutes: int = field(default_factory=lambda: int(os.getenv("MAX_AUDIO_MINUTES", "120")))
     max_upload_mb: int = field(default_factory=lambda: int(os.getenv("MAX_UPLOAD_MB", "500")))

@@ -25,6 +25,7 @@ class ProcessRequest(BaseModel):
     detect_recordings: bool | None = None
     align_model: str | None = None
     shape_pauses: bool | None = None
+    master_voice: bool | None = None
     human_review_gate: bool = True
 
 

@@ -10,7 +10,7 @@ from typing import Callable, TypeVar
 
 from . import pauses, recordings, speaking_profile
 from .ai import AIClient, PROMPT_VERSION
-from .audio import AudioService
+from .audio import AudioError, AudioService
 from .config import Settings
 from .database import Database, utc_now
 from .direction import MIN_GAP_MS, segment_gap_ms
@@ -265,6 +265,7 @@ class Pipeline:
         config = job["config"]
         if not config.get("shape_pauses", self.config.shape_pauses):
             raw_path.replace(final_path)
+            self._master_voice(job, segment, final_path)
             return None
         pace = ((profile or {}).get("derived") or {}).get("pace") or "moderate"
         align_model = config.get("align_model", self.config.align_model)
@@ -280,11 +281,27 @@ class Pipeline:
             traceback.print_exc()
             self._warn(job["id"], f"Word timestamps failed on segment {segment['segment_index']}: {str(exc)[:200]}")
         try:
-            return pauses.shape(raw_path, script, spoken, pace, final_path, seed=segment["id"], ffmpeg=self.config.ffmpeg, ffprobe=self.config.ffprobe)
+            shaped = pauses.shape(raw_path, script, spoken, pace, final_path, seed=segment["id"], ffmpeg=self.config.ffmpeg, ffprobe=self.config.ffprobe)
         except (pauses.AlignmentError, RuntimeError) as exc:  # a shaping problem must not cost the job its voiced audio
             self._warn(job["id"], f"Pauses left as voiced on segment {segment['segment_index']}: {str(exc)[:200]}")
             shutil.copyfile(raw_path, final_path)
-            return None
+            shaped = None
+        self._master_voice(job, segment, final_path)
+        return shaped
+
+    def _master_voice(self, job: dict, segment: dict, path: Path) -> None:
+        """Polish and level a voiced segment, in place.
+
+        Only narration reaches this: a kept recording is never shaped, so it keeps the loudness
+        `extract_levelled` gave it and none of this tone shaping. A mastering failure must not cost
+        the job its audio, so the unmastered voice is kept and the job carries a warning.
+        """
+        if not job["config"].get("master_voice", self.config.master_voice):
+            return
+        try:
+            self.audio.master(path, path)
+        except AudioError as exc:
+            self._warn(job["id"], f"Voice left unmastered on segment {segment['segment_index']}: {str(exc)[:200]}")
 
     def _narrate_segment(
         self,
