@@ -97,11 +97,18 @@ Interactive API documentation is available at `/docs`.
 
 ```bash
 pytest
+node tests/ui_check.mjs      # how a segment card renders
+node tests/busy_check.mjs    # buttons cannot be fired twice
 ```
 
 The tests cover segmentation, the voice-direction brief, gap and speed rules, silence insertion with real
 FFmpeg, continuity through processing and regeneration, and a real upload/validation lifecycle using a
 generated WAV file. They do not make paid API calls.
+
+The two Node checks load `app/static/app.js` in a stubbed DOM and exercise the pure render helpers
+and the button-busy logic: which buttons a card offers in each QA state, that narration is escaped
+before it reaches the page, and that a double click runs its action exactly once. They need only Node,
+no browser and no server.
 
 ## Speaking-pattern matching
 
@@ -152,6 +159,18 @@ ten times larger than the MP3 segments earlier versions produced.
 Projects processed before this change keep their old scripts, voice, and pause values. To hear the
 new narration on an existing project, run processing again; regenerating only the TTS stage of a
 segment keeps its old script and old pause values.
+
+Every action button disables itself and its neighbours while its request is in flight, so nothing
+can be fired twice by an impatient double click, and a failure appears next to the thing that failed
+rather than in an alert box. A background refresh never redraws the segment list while an action is
+running or while a transcript box holds unsaved text.
+
+A narration segment that QA flagged carries an **Approve** button: the reviewer listens, decides the
+take is fine, and `POST /api/segments/{id}/approve` marks it passed. The QA objections are not thrown
+away, they move to `overridden_issues` and the card shows them as "Approved over: …", so an approval
+always reads as a human overruling the machine. Re-voicing the segment discards the approval, because
+the judgement was about the audio that was actually heard. A kept recording is confirmed, not
+approved; the two endpoints stay separate to keep that distinction in the record.
 
 `scripts/preview_voice.py [voice ...] [--text "..."] [--raw]` voices one short line in each voice
 named, through the same persona, delivery rules and mastering the pipeline uses, so a preview sounds

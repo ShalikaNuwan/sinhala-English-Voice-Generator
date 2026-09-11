@@ -39,3 +39,13 @@ footer { text-align:center; padding:24px; color:var(--muted); }
 
 .profile { margin:12px 0; padding:10px 12px; border-left:3px solid var(--accent, #888); background:rgba(127,127,127,.08); border-radius:4px; }
 .profile p { margin:4px 0; }
+
+/* An action's failure belongs next to the thing that failed, not in an alert box. */
+.error { margin:10px 0 0; padding:9px 12px; border-radius:9px; font-weight:700;
+         color:#7f1d1d; background:#fdecec; border:1px solid #f6c9c9; }
+.segment .issues { margin:10px 0 0; }
+.segment-head .head-right { display:flex; gap:10px; align-items:center; }
+.review-summary { margin:14px 0 0; padding:11px 14px; border-radius:10px; background:var(--soft); }
+/* The approve action overrides a QA verdict, so it should not look like the routine grey buttons. */
+button.approve-button { background:var(--ok, #1a7f4b); }
+button[data-busy="1"] { opacity:.75; cursor:progress; }

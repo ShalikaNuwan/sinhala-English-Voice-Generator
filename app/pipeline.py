@@ -594,6 +594,31 @@ class Pipeline:
             (json.dumps(qa), utc_now(), segment_id),
         )
 
+    def approve_segment(self, segment_id: str) -> None:
+        """The reviewer has listened to a voiced segment and accepts it despite what QA said.
+
+        A kept recording is confirmed instead. Keeping the two apart means an approval always reads
+        as a human overruling the automatic verdict, and the issues that were overruled stay on the
+        record rather than disappearing. Re-voicing discards the approval, because the judgement was
+        about the audio the reviewer actually heard.
+        """
+        segment = self.db.one("SELECT * FROM segments WHERE id=?", (segment_id,))
+        if not segment or segment.get("kind") != "narration":
+            raise RuntimeError("Only narration segments are approved; confirm a kept recording instead")
+        if not segment.get("tts_audio_path") or segment.get("status") == "failed":
+            raise RuntimeError("This segment has no voiced audio to approve; regenerate it first")
+        qa = dict(segment.get("qa") or {})
+        overridden = [issue for issue in qa.get("issues", []) if issue]
+        qa["passed"] = True
+        qa["approved"] = True
+        if overridden:
+            qa["overridden_issues"] = overridden
+        qa["issues"] = []
+        self.db.execute(
+            "UPDATE segments SET qa_json=?, qa_status='passed', status='approved', updated_at=? WHERE id=?",
+            (json.dumps(qa), utc_now(), segment_id),
+        )
+
     def assemble_project(self, project_id: str, job_id: str | None = None) -> dict[str, str]:
         if not job_id:
             latest = self.db.one("SELECT id FROM jobs WHERE project_id=? ORDER BY created_at DESC LIMIT 1", (project_id,))
