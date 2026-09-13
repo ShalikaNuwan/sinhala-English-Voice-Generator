@@ -5,6 +5,7 @@ from pathlib import Path
 
 from openai import OpenAI
 
+from . import elevenlabs
 from .direction import build_instructions, speaking_speed
 from .recordings import NARRATOR
 from .schemas import FaithfulTranslation, NarrationAdaptation, QAEvaluation
@@ -19,10 +20,12 @@ def _field(item, name: str):
 
 
 class AIClient:
-    def __init__(self, api_key: str | None):
+    def __init__(self, api_key: str | None, elevenlabs_config: dict | None = None):
         if not api_key:
             raise RuntimeError("OPENAI_API_KEY is required before processing audio")
         self.client = OpenAI(api_key=api_key)
+        # Every text stage stays on OpenAI. Only voicing can be handed to another provider.
+        self.elevenlabs = elevenlabs_config or None
 
     def transcribe(self, audio_path: Path, model: str, topic: str, glossary: dict[str, str]) -> str:
         terms = ", ".join(f"{key}: {value}" for key, value in glossary.items())
@@ -196,8 +199,22 @@ class AIClient:
         previous_style: dict | None = None,
         persona: str | None = None,
         speed: float = 1.0,
+        previous_text: str | None = None,
     ) -> None:
         output_path.parent.mkdir(parents=True, exist_ok=True)
+        if self.elevenlabs:
+            # ElevenLabs has no field for the brief. Delivery comes from the voice settings, and the
+            # only continuity lever is telling it what was said immediately before.
+            elevenlabs.synthesize(
+                text, output_path,
+                api_key=self.elevenlabs.get("api_key"),
+                voice=self.elevenlabs.get("voice"),
+                model=self.elevenlabs.get("model"),
+                stability=self.elevenlabs.get("stability"),
+                similarity=self.elevenlabs.get("similarity"),
+                previous_text=previous_text,
+            )
+            return
         instructions = build_instructions(style, profile, previous_style, persona)
         with self.client.audio.speech.with_streaming_response.create(
             model=model,

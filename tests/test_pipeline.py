@@ -34,7 +34,7 @@ class FakeAI:
         return [{"speaker": speaker, "start": 0.0, "end": 3.0, "text": "මෙය පරීක්ෂණයකි."}]
 
     def synthesize(self, _text, _model, _voice, _style, output_path: Path, profile=None,
-                   previous_style=None, persona=None, speed=1.0):
+                   previous_style=None, persona=None, speed=1.0, previous_text=None):
         output_path.parent.mkdir(parents=True, exist_ok=True)
         subprocess.run(
             ["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=1", str(output_path)],
@@ -148,7 +148,7 @@ class ProfilingFakeAI(FakeAI):
         return super().adapt(faithful_en, model, narrator_profile, previous_narration)
 
     def synthesize(self, text, model, voice, style, output_path, profile=None,
-                   previous_style=None, persona=None, speed=1.0):
+                   previous_style=None, persona=None, speed=1.0, previous_text=None):
         self.synthesis_profiles.append(profile)
         self.synthesis_calls.append({
             "text": text, "voice": voice, "style": style, "output_path": output_path,
@@ -218,7 +218,7 @@ class PausingFakeAI(ProfilingFakeAI):
         self.adapt_calls.append({"faithful": faithful_en, "previous_narration": previous_narration})
         return NarrationAdaptation(narration_text="First part, second part. Third part.", beat="build", emotion="calm")
 
-    def synthesize(self, text, model, voice, style, output_path, profile=None, previous_style=None, persona=None, speed=1.0):
+    def synthesize(self, text, model, voice, style, output_path, profile=None, previous_style=None, persona=None, speed=1.0, previous_text=None):
         self.synthesis_calls.append({"text": text, "voice": voice, "style": style, "output_path": output_path,
                                      "previous_style": previous_style, "persona": persona, "speed": speed})
         bursts(Path(output_path), [(1.0, 0.9), (1.0, 1.4), (1.0, 0.5)])
@@ -820,7 +820,7 @@ def test_regenerating_tts_shapes_pauses_too(tmp_path):
 class CeilingFakeAI(PausingFakeAI):
     """A 2 s pause after a word the transcriber got wrong: it stays unknown, stays 2 s, and trips the ceiling."""
 
-    def synthesize(self, text, model, voice, style, output_path, profile=None, previous_style=None, persona=None, speed=1.0):
+    def synthesize(self, text, model, voice, style, output_path, profile=None, previous_style=None, persona=None, speed=1.0, previous_text=None):
         self.synthesis_calls.append({"text": text, "voice": voice, "style": style, "output_path": output_path,
                                      "previous_style": previous_style, "persona": persona, "speed": speed})
         bursts(Path(output_path), [(1.0, 0.9), (1.0, 2.0), (1.0, 0.5)])
@@ -928,7 +928,7 @@ class QuietFakeAI(FakeAI):
     """Voices at -20 dB, well below the narration target, so mastering's gain is unmistakable."""
 
     def synthesize(self, _text, _model, _voice, _style, output_path: Path, profile=None,
-                   previous_style=None, persona=None, speed=1.0):
+                   previous_style=None, persona=None, speed=1.0, previous_text=None):
         output_path.parent.mkdir(parents=True, exist_ok=True)
         subprocess.run(
             ["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
@@ -1042,3 +1042,41 @@ def test_regenerating_clears_an_earlier_approval(tmp_path):
     qa = db.one("SELECT * FROM segments WHERE id=?", (segments[0]["id"],))["qa"]
     assert not qa.get("approved")
     assert not qa.get("overridden_issues")
+
+
+def test_the_voice_provider_defaults_to_openai(tmp_path):
+    """Nothing changes for existing projects unless the provider is switched on purpose."""
+    data_dir = tmp_path / "data"
+    config = Settings(data_dir=data_dir, database_path=data_dir / "app.db", openai_api_key="not-used")
+    db = Database(config.database_path); db.initialize()
+
+    assert Pipeline(db, config)._elevenlabs_config() is None
+
+
+def test_choosing_elevenlabs_passes_the_voice_and_dials_through(tmp_path):
+    data_dir = tmp_path / "data"
+    config = Settings(
+        data_dir=data_dir, database_path=data_dir / "app.db", openai_api_key="not-used",
+        tts_provider="elevenlabs", elevenlabs_api_key="el-key",
+        elevenlabs_voice="uju3wxzG5OhpWcoi3SMy", elevenlabs_model="eleven_multilingual_v2",
+        elevenlabs_stability=0.5, elevenlabs_similarity=0.75,
+    )
+    db = Database(config.database_path); db.initialize()
+
+    settings = Pipeline(db, config)._elevenlabs_config()
+
+    assert settings == {"api_key": "el-key", "voice": "uju3wxzG5OhpWcoi3SMy",
+                        "model": "eleven_multilingual_v2", "stability": 0.5, "similarity": 0.75}
+
+
+def test_choosing_elevenlabs_without_a_key_is_refused_loudly(tmp_path):
+    """Silently falling back to OpenAI would bill the wrong provider and sound wrong."""
+    import pytest
+
+    data_dir = tmp_path / "data"
+    config = Settings(data_dir=data_dir, database_path=data_dir / "app.db", openai_api_key="not-used",
+                      tts_provider="elevenlabs", elevenlabs_api_key=None)
+    db = Database(config.database_path); db.initialize()
+
+    with pytest.raises(RuntimeError):
+        Pipeline(db, config)._elevenlabs_config()

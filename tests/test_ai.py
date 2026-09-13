@@ -126,6 +126,7 @@ def test_synthesis_sends_the_brief_speed_and_wav_format(tmp_path):
     ai.client = SimpleNamespace(
         audio=SimpleNamespace(speech=SimpleNamespace(with_streaming_response=Speech()))
     )
+    ai.elevenlabs = None
     output = tmp_path / "generated" / "0002_r01.wav"
     style = {"beat": "reveal", "emotion": "tense", "emphasis": ["911"]}
     previous = {"beat": "setup", "emotion": "calm"}
@@ -187,6 +188,7 @@ def test_synthesis_clamps_speed_and_opens_with_the_persona(tmp_path):
     ai.client = SimpleNamespace(
         audio=SimpleNamespace(speech=SimpleNamespace(with_streaming_response=Speech()))
     )
+    ai.elevenlabs = None
 
     ai.synthesize("Hello.", "tts-model", "cedar", {}, tmp_path / "x.wav", speed=9.0)
 
@@ -312,3 +314,65 @@ def test_adaptation_limits_paragraph_breaks_and_ellipses():
     system = captured["input"][0]["content"]
     assert "at most twice per passage" in system
     assert "at most once per passage" in system
+
+
+def test_synthesis_routes_to_elevenlabs_when_that_provider_is_configured(tmp_path, monkeypatch):
+    """The OpenAI speech endpoint must not be touched at all when ElevenLabs is the provider."""
+    from app import elevenlabs
+
+    captured = {}
+
+    def fake_synthesize(text, output_path, **kwargs):
+        captured["text"] = text
+        captured["path"] = output_path
+        captured.update(kwargs)
+
+    monkeypatch.setattr(elevenlabs, "synthesize", fake_synthesize)
+
+    def explode(**_kwargs):
+        raise AssertionError("the OpenAI speech endpoint was called")
+
+    ai = AIClient.__new__(AIClient)
+    ai.client = SimpleNamespace(
+        audio=SimpleNamespace(speech=SimpleNamespace(with_streaming_response=SimpleNamespace(create=explode)))
+    )
+    ai.elevenlabs = {"api_key": "el-key", "voice": "uju3wxzG5OhpWcoi3SMy",
+                     "model": "eleven_multilingual_v2", "stability": 0.5, "similarity": 0.75}
+
+    output = tmp_path / "0003_r01.wav"
+    ai.synthesize("She says someone is coming after her.", "gpt-4o-mini-tts", "cedar", {}, output,
+                  previous_text="The call comes in at 4:51.")
+
+    assert captured["text"] == "She says someone is coming after her."
+    assert captured["path"] == output
+    assert captured["voice"] == "uju3wxzG5OhpWcoi3SMy"
+    assert captured["model"] == "eleven_multilingual_v2"
+    assert captured["stability"] == 0.5
+    assert captured["api_key"] == "el-key"
+    assert captured["previous_text"] == "The call comes in at 4:51."
+
+
+def test_synthesis_still_uses_openai_when_no_other_provider_is_configured(tmp_path):
+    captured = {}
+
+    class Response:
+        def __enter__(self): return self
+        def __exit__(self, *_): return False
+        def stream_to_file(self, path): captured["path"] = path
+
+    class Speech:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            return Response()
+
+    ai = AIClient.__new__(AIClient)
+    ai.client = SimpleNamespace(
+        audio=SimpleNamespace(speech=SimpleNamespace(with_streaming_response=Speech()))
+    )
+    ai.elevenlabs = None
+
+    ai.synthesize("Testing.", "gpt-4o-mini-tts", "cedar", {}, tmp_path / "a.wav", previous_text="ignored here")
+
+    assert captured["voice"] == "cedar"
+    assert captured["model"] == "gpt-4o-mini-tts"
+    assert "instructions" in captured  # the full brief still goes to OpenAI

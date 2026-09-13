@@ -69,6 +69,12 @@ All model names are environment variables so deployment is not tied to a changin
 | `ALIGN_MODEL` | `whisper-1` |
 | `SHAPE_PAUSES` | `1` |
 | `MASTER_VOICE` | `1` |
+| `TTS_PROVIDER` | `openai` |
+| `ELEVENLABS_API_KEY` | (unset) |
+| `ELEVENLABS_VOICE` | `uju3wxzG5OhpWcoi3SMy` |
+| `ELEVENLABS_MODEL` | `eleven_multilingual_v2` |
+| `ELEVENLABS_STABILITY` | `0.5` |
+| `ELEVENLABS_SIMILARITY` | `0.75` |
 | `AUDIO_MODEL` | `gpt-audio` |
 | `DATA_DIR` | `./data` |
 | `MAX_AUDIO_MINUTES` | `120` |
@@ -233,6 +239,28 @@ does not line up either, the raw voice is kept and the job says so. `SHAPE_PAUSE
 
 `scripts/pause_listening_set.py <job_id> <segment_index...>` copies the raw and shaped files for
 chosen segments to `data/pause_listening/` with a pause table for each, for listening.
+
+## Voicing with ElevenLabs
+
+`TTS_PROVIDER=elevenlabs` sends the voicing stage to ElevenLabs instead of the OpenAI speech
+endpoint. Every other stage - transcription, translation, adaptation, QA, alignment - stays on
+OpenAI, because only `AIClient.synthesize` branches. A missing `ELEVENLABS_API_KEY` with the
+provider switched on raises rather than falling back, since a silent fallback would bill the wrong
+provider and produce a voice nobody chose.
+
+Audio is requested as `pcm_24000`, which is the rate and channel count the rest of the pipeline
+already works in, so the reply is wrapped in a WAV header rather than transcoded. Pause shaping,
+alignment, QA and mastering then run exactly as they do for an OpenAI voice.
+
+**What does not carry over.** The brief that `direction.build_instructions` writes has nowhere to
+go: ElevenLabs has no instructions field. Persona, voice character, delivery rules and the beat all
+stop at the provider boundary. What survives is `ELEVENLABS_STABILITY` and `ELEVENLABS_SIMILARITY`,
+plus `previous_text`, which carries the previous segment's narration so the voice does not reset at
+a boundary. If you switch providers, expect the persona to stop having any effect; the voice itself
+is doing the work instead.
+
+Voice Library voices need a paid ElevenLabs plan. On the free tier the API refuses them with
+`paid_plan_required`, whatever credits the account holds, because the restriction is plan-level.
 
 ## Voice mastering
 

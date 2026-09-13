@@ -41,8 +41,26 @@ class Pipeline:
         self.config = config
         self.audio = audio or AudioService(config.ffmpeg, config.ffprobe)
 
+    def _elevenlabs_config(self) -> dict | None:
+        """The ElevenLabs settings, or None when voicing stays on OpenAI.
+
+        A missing key with the provider switched on is an error rather than a quiet fallback:
+        falling back would bill the wrong provider and produce a voice nobody asked for.
+        """
+        if self.config.tts_provider != "elevenlabs":
+            return None
+        if not self.config.elevenlabs_api_key:
+            raise RuntimeError("TTS_PROVIDER is elevenlabs but ELEVENLABS_API_KEY is not set")
+        return {
+            "api_key": self.config.elevenlabs_api_key,
+            "voice": self.config.elevenlabs_voice,
+            "model": self.config.elevenlabs_model,
+            "stability": self.config.elevenlabs_stability,
+            "similarity": self.config.elevenlabs_similarity,
+        }
+
     def _ai(self) -> AIClient:
-        return AIClient(self.config.openai_api_key)
+        return AIClient(self.config.openai_api_key, self._elevenlabs_config())
 
     def _job_update(self, job_id: str, *, status: str, stage: str, progress: int, error: str | None = None) -> None:
         self.db.execute(
@@ -352,7 +370,7 @@ class Pipeline:
             job_id, segment_id, "tts", config["tts_model"], adaptation.narration_text,
             lambda: ai.synthesize(
                 adaptation.narration_text, config["tts_model"], config["voice"], style, raw_path,
-                profile, previous_style, persona, speed,
+                profile, previous_style, persona, speed, previous_text=previous_context,
             ),
         )
         shaped = self._shape_pauses(ai, job, segment, raw_path, tts_path, adaptation.narration_text, profile)
@@ -514,6 +532,7 @@ class Pipeline:
                     lambda: ai.synthesize(
                         narration_text, config["tts_model"], config["voice"], style, raw_path,
                         project.get("speaking_profile"), previous_style, persona, speed,
+                        previous_text=previous_narration,
                     ),
                 )
                 shaped = self._shape_pauses(ai, job, segment, raw_path, tts_path, narration_text, project.get("speaking_profile"))
