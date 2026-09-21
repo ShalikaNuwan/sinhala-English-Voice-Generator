@@ -395,6 +395,7 @@ def test_adaptation_with_runs_asks_for_one_line_per_run():
     user = captured["input"][1]["content"]
     assert "one line per run" in system
     assert "paragraph-break limit above does not apply" in system
+    assert "rough machine transcripts" in system and "faithful translation" in system
     assert "Spoken runs, numbered, in order:\n1. ඇය කිව්වා\n2. එයා ගියා" in user
 
 

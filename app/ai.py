@@ -180,9 +180,12 @@ class AIClient:
                 "\nThe Sinhala was spoken as the numbered runs in the user message. Return lines: one line per run, "
                 "in the same order, each rendering exactly that run's content, with runs listing the number it "
                 "covers. Merge two neighbouring runs into one line only when English grammar leaves no other "
-                "choice, and list both numbers. Every run must be covered exactly once. The paragraph-break limit "
-                "above does not apply in this mode: narration_text must be the lines joined by blank lines, one "
-                "line per paragraph."
+                "choice, and list both numbers. Every run must be covered exactly once. The run texts are rough "
+                "machine transcripts of the Sinhala, often garbled or loosely translated; they show only where each "
+                "run starts and ends. Every fact and sentence comes from the faithful translation: never add "
+                "anything that appears only in a run text, and never drop part of the faithful translation. The "
+                "paragraph-break limit above does not apply in this mode: narration_text must be the lines joined "
+                "by blank lines, one line per paragraph."
             )
         response = self.client.responses.parse(
             model=model,
