@@ -20,10 +20,13 @@ class FakeAI:
     def translate(self, *_args, **_kwargs):
         return FaithfulTranslation(english_faithful="This is a test.")
 
-    def adapt(self, *_args, **_kwargs):
-        return NarrationAdaptation(
-            narration_text="This is a test.", beat="reveal", emotion="tense", pause_after_ms=800,
-        )
+    def adapt(self, *_args, runs=None, **_kwargs):
+        from app.schemas import ScriptLine
+        if runs:
+            lines = [ScriptLine(text=f"Line {number}.", runs=[number]) for number in range(1, len(runs) + 1)]
+            return NarrationAdaptation(narration_text="\n\n".join(line.text for line in lines), lines=lines,
+                                       beat="reveal", emotion="tense", pause_after_ms=800)
+        return NarrationAdaptation(narration_text="This is a test.", beat="reveal", emotion="tense", pause_after_ms=800)
 
     def describe_delivery(self, _audio_path, _model):
         return "Steady, moderate energy with a factual tone."
@@ -143,9 +146,9 @@ class ProfilingFakeAI(FakeAI):
         self.diarize_calls.append({"path": Path(audio_path), "reference": reference})
         return super().diarize(audio_path, model, reference)
 
-    def adapt(self, faithful_en, model, narrator_profile, previous_narration=""):
-        self.adapt_calls.append({"faithful": faithful_en, "previous_narration": previous_narration})
-        return super().adapt(faithful_en, model, narrator_profile, previous_narration)
+    def adapt(self, faithful_en, model, narrator_profile, previous_narration="", runs=None):
+        self.adapt_calls.append({"faithful": faithful_en, "previous_narration": previous_narration, "runs": runs})
+        return super().adapt(faithful_en, model, narrator_profile, previous_narration=previous_narration, runs=runs)
 
     def synthesize(self, text, model, voice, style, output_path, profile=None,
                    previous_style=None, persona=None, speed=1.0, previous_text=None):
@@ -158,6 +161,7 @@ class ProfilingFakeAI(FakeAI):
 
 
 SINHALA = "ඇය කියනවා කවුරුහරි එනවා කියලා."
+SINHALA_TEST = "මෙය පරීක්ෂණයකි."
 CALL = "Hello? Do you need the police?"
 
 
@@ -206,6 +210,35 @@ class BoundaryFakeAI(RecordingFakeAI):
         ]
 
 
+class PhrasedFakeAI(ProfilingFakeAI):
+    """Chunk 1 is narrator only, spoken as four phrases: A and B run on, then real pauses before C and D."""
+
+    def diarize(self, audio_path, model, reference=None):
+        self.diarize_calls.append({"path": Path(audio_path), "reference": reference})
+        if reference is None:
+            return [{"speaker": "A", "start": 0.0, "end": 9.0, "text": SINHALA}]
+        if Path(audio_path).name == "0001_source.wav":
+            return [
+                {"speaker": "narrator", "start": 0.0, "end": 8.0, "text": "A " + SINHALA},
+                {"speaker": "narrator", "start": 8.1, "end": 15.0, "text": "B " + SINHALA},
+                {"speaker": "narrator", "start": 15.6, "end": 30.0, "text": "C " + SINHALA},
+                {"speaker": "narrator", "start": 30.3, "end": 44.7, "text": "D " + SINHALA},
+            ]
+        return [{"speaker": "narrator", "start": 0.5, "end": 20.2, "text": "E " + SINHALA}]
+
+
+class MisalignedFakeAI(PhrasedFakeAI):
+    """Returns lines that do not cover the runs."""
+
+    def adapt(self, faithful_en, model, narrator_profile, previous_narration="", runs=None):
+        from app.schemas import ScriptLine
+        self.adapt_calls.append({"faithful": faithful_en, "previous_narration": previous_narration, "runs": runs})
+        if runs:
+            lines = [ScriptLine(text="Only one.", runs=[1]), ScriptLine(text="Wrong.", runs=[1, 2])]
+            return NarrationAdaptation(narration_text="Only one.\n\nWrong.", lines=lines)
+        return NarrationAdaptation(narration_text="This is a test.")
+
+
 class PausingFakeAI(ProfilingFakeAI):
     """Voices a three-part script as tone bursts with a 0.9 s and a 1.4 s pause, and knows the word times."""
 
@@ -214,7 +247,7 @@ class PausingFakeAI(ProfilingFakeAI):
         self.timestamps_error = timestamps_error
         self.timestamp_calls = 0
 
-    def adapt(self, faithful_en, model, narrator_profile, previous_narration=""):
+    def adapt(self, faithful_en, model, narrator_profile, previous_narration="", runs=None):
         self.adapt_calls.append({"faithful": faithful_en, "previous_narration": previous_narration})
         return NarrationAdaptation(narration_text="First part, second part. Third part.", beat="build", emotion="calm")
 
@@ -332,7 +365,8 @@ def test_adaptation_sees_the_previous_narration(tmp_path):
     pipeline.process_job(start_job(db, project_id))
 
     assert ai.adapt_calls[0]["previous_narration"] == ""
-    assert ai.adapt_calls[1]["previous_narration"] == "This is a test."
+    # FakeAI's diarize gives segment 1 a single narrator phrase, so it adapts over one run.
+    assert ai.adapt_calls[1]["previous_narration"] == "Line 1."
 
 
 def test_synthesis_receives_the_job_speed_and_the_project_persona(tmp_path):
@@ -423,7 +457,8 @@ def test_regenerating_the_adaptation_passes_the_predecessors_narration(tmp_path)
 
     pipeline.regenerate_segment(second["id"], "adaptation")
 
-    assert ai.adapt_calls[-1]["previous_narration"] == "This is a test."
+    # FakeAI's diarize gives segment 1 a single narrator phrase, so it adapts over one run.
+    assert ai.adapt_calls[-1]["previous_narration"] == "Line 1."
 
 
 def test_jobs_created_before_speed_existed_fall_back_to_the_configured_speed(tmp_path):
@@ -785,7 +820,7 @@ def test_timestamp_failure_falls_back_to_punctuation_order(tmp_path):
 
 def test_unshapeable_audio_keeps_the_raw_voice_with_a_warning(tmp_path):
     class LonelyFakeAI(PausingFakeAI):
-        def adapt(self, faithful_en, model, narrator_profile, previous_narration=""):
+        def adapt(self, faithful_en, model, narrator_profile, previous_narration="", runs=None):
             return NarrationAdaptation(narration_text="One sentence with no breaks at all")
 
     ai = LonelyFakeAI(timestamps_error=RuntimeError("no whisper"))
@@ -1091,7 +1126,8 @@ def test_a_text_only_job_reviews_the_script_without_voicing_anything(tmp_path):
 
     segment = db.one("SELECT * FROM segments WHERE project_id=?", (project_id,))
     assert ai.synthesis_calls == [] and ai.timestamp_calls == 0 if hasattr(ai, "timestamp_calls") else ai.synthesis_calls == []
-    assert segment["narration_en"] == "This is a test."
+    # FakeAI's diarize gives this 1 s source a single narrator phrase, so it adapts over one run.
+    assert segment["narration_en"] == "Line 1."
     assert segment["tts_audio_path"] is None and segment["tts_duration_ms"] is None
     assert segment["qa_status"] == "passed" and "duration_ratio" not in segment["qa"]
     assert db.one("SELECT status FROM jobs WHERE id=?", (job_id,))["status"] == "awaiting_review"
@@ -1107,8 +1143,9 @@ def test_script_parts_export_splits_the_reviewed_script_around_recordings(tmp_pa
     assert names == ["01_narration.txt", "02_recording_segment002.wav", "03_narration.txt", "index.md"]
     out_dir = Path(written["index.md"]).parent
     assert out_dir.name == "script_parts" and out_dir.parent.name == "exports"
-    assert Path(written["01_narration.txt"]).read_text(encoding="utf-8") == "This is a test.\n"
-    assert Path(written["03_narration.txt"]).read_text(encoding="utf-8") == "This is a test.\n\nThis is a test.\n"
+    # RecordingFakeAI's diarize gives each narration piece a single narrator phrase, so each adapts over one run.
+    assert Path(written["01_narration.txt"]).read_text(encoding="utf-8") == "Line 1.\n"
+    assert Path(written["03_narration.txt"]).read_text(encoding="utf-8") == "Line 1.\n\nLine 1.\n"
     assert 10100 <= pipeline.audio.probe(Path(written["02_recording_segment002.wav"])).duration_ms <= 10500
     index = Path(written["index.md"]).read_text(encoding="utf-8")
     assert "`01_narration.txt`: narration, segments 1," in index
@@ -1124,3 +1161,83 @@ def test_script_parts_export_is_refused_when_a_recording_has_no_audio(tmp_path):
 
     with pytest.raises(RuntimeError, match="no audio"):
         pipeline.export_script_parts(project_id)
+
+
+def test_narrator_phrases_are_stored_per_narration_segment(tmp_path):
+    pipeline, db, project_id, job_id, ai, segments = run_recording_job(tmp_path)
+
+    assert segments[0]["phrases"] == [{"start_ms": 0, "end_ms": 19850, "text": SINHALA}]
+    assert segments[1]["phrases"] == []  # the kept recording
+    assert segments[2]["phrases"] == [{"start_ms": 30150, "end_ms": 45000, "text": SINHALA}]
+    assert segments[3]["phrases"] == [{"start_ms": 45000, "end_ms": 65000, "text": SINHALA}]
+
+
+def test_runs_reach_the_adaptation_and_lines_carry_the_measured_breaks(tmp_path):
+    ai = PhrasedFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai, seconds=65)
+    job_id = start_job(db, project_id)
+
+    pipeline.process_job(job_id)
+
+    first, second = db.all("SELECT * FROM segments WHERE job_id=? ORDER BY segment_index", (job_id,))
+    assert ai.adapt_calls[0]["runs"] == ["A " + SINHALA + " B " + SINHALA, "C " + SINHALA, "D " + SINHALA]
+    assert first["narration_en"] == "Line 1.\n\nLine 2.\n\nLine 3."
+    lines = first["lines"]
+    assert [line["runs"] for line in lines] == [[1], [2], [3]]
+    assert [line["gap_after_ms"] for line in lines] == [600, 300, 800]  # 45300 (next phrase, chunk 2 file 0.5 s minus 0.2 s lead) - 44700
+    assert [line["break_s"] for line in lines] == [0.6, 0.4, 0.8]
+    assert lines[0]["start_ms"] == 0 and lines[0]["end_ms"] == 15000
+    assert second["lines"][0]["runs"] == [1] and second["lines"][0]["gap_after_ms"] == 0 and second["lines"][0]["break_s"] is None
+    assert first["qa_status"] == "passed"
+
+
+def test_lines_that_do_not_cover_the_runs_go_to_review(tmp_path):
+    ai = MisalignedFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai, seconds=65)
+    job_id = start_job(db, project_id)
+
+    pipeline.process_job(job_id)
+
+    first = db.one("SELECT * FROM segments WHERE job_id=? AND segment_index=1", (job_id,))
+    assert first["qa_status"] == "needs_review"
+    assert "Script lines do not follow the spoken runs" in first["qa"]["issues"]
+    assert [line["runs"] for line in first["lines"]] == [[1], [1, 2]]
+
+
+def test_a_segment_without_phrases_adapts_as_a_passage_with_a_warning(tmp_path):
+    ai = ProfilingFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai)
+    job_id = start_job(db, project_id)
+
+    pipeline.process_job(job_id)
+
+    segment = db.one("SELECT * FROM segments WHERE job_id=?", (job_id,))
+    # FakeAI's sample-and-chunk spans give this 1 s source a narrator phrase 0-1000 ms, so phrases exist; switch detection off to get none.
+    assert ai.adapt_calls[0]["runs"] == [SINHALA_TEST]
+
+
+def test_detection_off_means_no_phrases_no_runs_and_no_warning_about_them(tmp_path):
+    ai = ProfilingFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai)
+    job_id = start_job(db, project_id, detect_recordings=False)
+
+    pipeline.process_job(job_id)
+
+    segment = db.one("SELECT * FROM segments WHERE job_id=?", (job_id,))
+    assert segment["phrases"] == [] and segment["lines"] == []
+    assert ai.adapt_calls[0]["runs"] is None
+    assert not any("spoken phrases" in w for w in db.one("SELECT * FROM jobs WHERE id=?", (job_id,))["warnings"])
+
+
+def test_regenerating_the_adaptation_uses_the_stored_phrases(tmp_path):
+    ai = PhrasedFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai, seconds=65)
+    job_id = start_job(db, project_id)
+    pipeline.process_job(job_id)
+    first = db.one("SELECT * FROM segments WHERE job_id=? AND segment_index=1", (job_id,))
+
+    pipeline.regenerate_segment(first["id"], "adaptation")
+
+    fresh = db.one("SELECT * FROM segments WHERE id=?", (first["id"],))
+    assert ai.adapt_calls[-1]["runs"] == ai.adapt_calls[0]["runs"]
+    assert [line["break_s"] for line in fresh["lines"]] == [0.6, 0.4, 0.8]

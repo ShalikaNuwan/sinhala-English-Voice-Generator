@@ -8,7 +8,7 @@ import uuid
 from pathlib import Path
 from typing import Callable, TypeVar
 
-from . import pauses, recordings, script_parts, speaking_profile
+from . import breaks, pauses, recordings, script_parts, speaking_profile
 from .ai import AIClient, PROMPT_VERSION
 from .audio import AudioError, AudioService
 from .config import Settings
@@ -82,6 +82,40 @@ class Pipeline:
         if not isinstance(persona, str) or not persona.strip():
             persona = None
         return persona, config.get("speed", self.config.tts_speed)
+
+    def _next_phrase_start(self, job_id: str, segment_index: int) -> int | None:
+        """Where the narrator next speaks after this segment, if the next segment is narration with phrases."""
+        following = self.db.one(
+            "SELECT kind, phrases_json FROM segments WHERE job_id=? AND segment_index=?", (job_id, segment_index + 1),
+        )
+        if following and following.get("kind") == "narration" and following.get("phrases"):
+            return following["phrases"][0]["start_ms"]
+        return None
+
+    def _adapt_lines(self, ai: AIClient, job: dict, project: dict, segment: dict, faithful_text: str, previous_narration: str):
+        """Adapt a segment as lines over its spoken runs; fall back to a passage when it has no phrases.
+
+        Returns (narration_text, style, lines, lines_ok, run_count).
+        """
+        config = job["config"]
+        phrases = segment.get("phrases") or []
+        run_list = breaks.runs(phrases, segment["end_ms"], self._next_phrase_start(job["id"], segment["segment_index"])) if phrases else []
+        if not run_list and config.get("detect_recordings", self.config.detect_recordings):
+            self._warn(job["id"], f"No spoken phrases for segment {segment['segment_index']}; its breaks will use defaults")
+        run_texts = [run["text"] for run in run_list] or None
+        adaptation = self._tracked_call(
+            job["id"], segment["id"], "adaptation", config["text_model"], faithful_text,
+            lambda: ai.adapt(faithful_text, config["text_model"], project["narrator_profile"] or {}, previous_narration[-600:], runs=run_texts),
+        )
+        style = adaptation.model_dump(exclude={"narration_text", "lines"})
+        raw_lines = [line.model_dump() for line in adaptation.lines]
+        lines_ok = True
+        lines: list[dict] = []
+        if run_list:
+            lines_ok = bool(raw_lines) and breaks.covers_runs(raw_lines, len(run_list))
+            lines = breaks.attach_breaks(raw_lines, run_list)
+        narration_text = "\n\n".join(line["text"] for line in lines) if lines else adaptation.narration_text
+        return narration_text, style, lines, lines_ok, len(run_list)
 
     def _normalized_path(self, project_id: str) -> Path:
         return self.config.data_dir / "projects" / project_id / "original" / "source_normalized.wav"
@@ -244,10 +278,21 @@ class Pipeline:
                 if (start_ms, end_ms) != (chunk_start, chunk_end):
                     source_path = chunk_path.parent / f"{index:04d}_piece.wav"
                     self.audio.extract(normalized, start_ms, end_ms, source_path, pad_ms=0)
+                phrases = [
+                    {
+                        "start_ms": max(start_ms, chunk_start + round(float(item["start"]) * 1000)),
+                        "end_ms": min(end_ms, chunk_start + round(float(item["end"]) * 1000)),
+                        "text": (item.get("text") or "").strip(),
+                    }
+                    for item in spans
+                    if recordings.is_narrator_speech(item)
+                    and chunk_start + round(float(item["end"]) * 1000) > start_ms
+                    and chunk_start + round(float(item["start"]) * 1000) < end_ms
+                ]
                 self.db.execute(
-                    "INSERT INTO segments(id, job_id, project_id, segment_index, start_ms, end_ms, source_audio_path, kind, updated_at) "
-                    "VALUES(?,?,?,?,?,?,?,?,?)",
-                    (segment_id, job_id, project["id"], index, start_ms, end_ms, str(source_path), "narration", utc_now()),
+                    "INSERT INTO segments(id, job_id, project_id, segment_index, start_ms, end_ms, source_audio_path, kind, phrases_json, updated_at) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (segment_id, job_id, project["id"], index, start_ms, end_ms, str(source_path), "narration", json.dumps(phrases), utc_now()),
                 )
         return segment_ids
 
@@ -353,14 +398,10 @@ class Pipeline:
             (faithful.english_faithful, json.dumps(faithful.entities), json.dumps(faithful.numbers), utc_now(), segment_id),
         )
 
-        adaptation = self._tracked_call(
-            job_id, segment_id, "adaptation", config["text_model"], faithful.english_faithful,
-            lambda: ai.adapt(faithful.english_faithful, config["text_model"], project["narrator_profile"] or {}, previous_context[-600:]),
-        )
-        style = adaptation.model_dump(exclude={"narration_text"})
+        narration_text, style, lines, lines_ok, _ = self._adapt_lines(ai, job, project, segment, faithful.english_faithful, previous_context)
         self.db.execute(
-            "UPDATE segments SET narration_en=?, style_json=?, status='adapted', updated_at=? WHERE id=?",
-            (adaptation.narration_text, json.dumps(style), utc_now(), segment_id),
+            "UPDATE segments SET narration_en=?, style_json=?, lines_json=?, status='adapted', updated_at=? WHERE id=?",
+            (narration_text, json.dumps(style), json.dumps(lines), utc_now(), segment_id),
         )
 
         shaped, tts_duration = None, None
@@ -369,13 +410,13 @@ class Pipeline:
             generated = self._generated_dir(project["id"], job_id)
             raw_path, tts_path = generated / f"{stem}_raw.wav", generated / f"{stem}.wav"
             self._tracked_call(
-                job_id, segment_id, "tts", config["tts_model"], adaptation.narration_text,
+                job_id, segment_id, "tts", config["tts_model"], narration_text,
                 lambda: ai.synthesize(
-                    adaptation.narration_text, config["tts_model"], config["voice"], style, raw_path,
+                    narration_text, config["tts_model"], config["voice"], style, raw_path,
                     profile, previous_style, persona, speed, previous_text=previous_context,
                 ),
             )
-            shaped = self._shape_pauses(ai, job, segment, raw_path, tts_path, adaptation.narration_text, profile)
+            shaped = self._shape_pauses(ai, job, segment, raw_path, tts_path, narration_text, profile)
             tts_duration = self.audio.probe(tts_path).duration_ms
             self.db.execute(
                 "UPDATE segments SET tts_audio_path=?, tts_duration_ms=?, status='generated', updated_at=? WHERE id=?",
@@ -383,16 +424,19 @@ class Pipeline:
             )
 
         qa = self._tracked_call(
-            job_id, segment_id, "qa", config["qa_model"], faithful.english_faithful + adaptation.narration_text,
-            lambda: ai.evaluate(faithful.english_faithful, adaptation.narration_text, config["qa_model"]),
+            job_id, segment_id, "qa", config["qa_model"], faithful.english_faithful + narration_text,
+            lambda: ai.evaluate(faithful.english_faithful, narration_text, config["qa_model"]),
         )
         qa_payload = self._qa_verdict(qa, transcript, tts_duration, segment, shaped)
+        if not lines_ok:
+            qa_payload["passed"] = False
+            qa_payload["issues"] = qa_payload["issues"] + ["Script lines do not follow the spoken runs"]
         qa_status = "passed" if qa_payload["passed"] else "needs_review"
         self.db.execute(
             "UPDATE segments SET qa_json=?, qa_status=?, status=?, updated_at=? WHERE id=?",
             (json.dumps(qa_payload), qa_status, qa_status, utc_now(), segment_id),
         )
-        return adaptation.narration_text, style
+        return narration_text, style
 
     def process_job(self, job_id: str) -> None:
         job = self.db.one("SELECT * FROM jobs WHERE id=?", (job_id,))
@@ -500,6 +544,7 @@ class Pipeline:
             style = segment["style"] or {}
             shaped = None
             revoiced = False
+            lines_ok = True
             if stage == "translation":
                 faithful = self._tracked_call(
                     job["id"], segment_id, "translation", config["text_model"], segment["transcript_si"],
@@ -512,15 +557,10 @@ class Pipeline:
                 )
                 stage = "adaptation"
             if stage == "adaptation":
-                adaptation = self._tracked_call(
-                    job["id"], segment_id, "adaptation", config["text_model"], faithful_text,
-                    lambda: ai.adapt(faithful_text, config["text_model"], project["narrator_profile"] or {}, previous_narration[-600:]),
-                )
-                narration_text = adaptation.narration_text
-                style = adaptation.model_dump(exclude={"narration_text"})
+                narration_text, style, lines, lines_ok, _ = self._adapt_lines(ai, job, project, segment, faithful_text, previous_narration)
                 self.db.execute(
-                    "UPDATE segments SET narration_en=?, style_json=? WHERE id=?",
-                    (narration_text, json.dumps(style), segment_id),
+                    "UPDATE segments SET narration_en=?, style_json=?, lines_json=? WHERE id=?",
+                    (narration_text, json.dumps(style), json.dumps(lines), segment_id),
                 )
                 stage = "tts"
             if stage == "tts":
@@ -550,6 +590,9 @@ class Pipeline:
                 lambda: ai.evaluate(fresh["faithful_en"], fresh["narration_en"], config["qa_model"]),
             )
             qa_payload = self._qa_verdict(qa, fresh["transcript_si"], fresh.get("tts_duration_ms"), fresh, shaped, revoiced=revoiced)
+            if not lines_ok:
+                qa_payload["passed"] = False
+                qa_payload["issues"] = qa_payload["issues"] + ["Script lines do not follow the spoken runs"]
             status = "passed" if qa_payload["passed"] else "needs_review"
             self.db.execute(
                 "UPDATE segments SET qa_json=?, qa_status=?, status=?, updated_at=? WHERE id=?",
