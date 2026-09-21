@@ -258,6 +258,14 @@ lines do not cover its runs, QA sends it to review with "Script lines do not fol
 runs". Segments without phrase data (detection off, or older jobs) export their paragraphs with
 default breaks of 0.9 s between paragraphs and 0.5 s at the end.
 
+Every chunk is diarized twice, because one call drops spans another returns and a dropped span reads
+as a long pause the narrator never took; the second pass fills only the stretches of at least 300 ms
+the first never heard, and a third pass runs when the narrator still covers under 85 percent of the
+chunk's narration. Silence nobody was heard over is a hole, not a measurement: when a segment's
+phrases cover under 85 percent of it, every break over 1.0 s is capped at 1.0 s and the job carries
+"Phrases cover N% of segment K; breaks over 1.0 s capped", and `index.md` marks that part with
+"coverage NN% (check breaks by ear)" so you know which one to check.
+
 The export is written to `exports/script_parts/`: every stretch of narration between two kept
 recordings becomes one or more numbered text files (split at 9,000 characters or 40 break marks,
 since too many marks in one generation destabilise the voice), every kept recording is copied as a

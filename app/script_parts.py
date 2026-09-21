@@ -7,7 +7,7 @@ writes the files.
 
 from __future__ import annotations
 
-from . import breaks
+from . import breaks, recordings
 
 
 def plan_parts(segments: list[dict]) -> list[dict]:
@@ -93,5 +93,7 @@ def index_lines(pieces: list[dict]) -> list[str]:
             segs = ", ".join(str(index) for index in piece["segments"])
             chars = len(render(piece))
             marks = sum(1 for line in piece["lines"] if line.get("break_s"))
-            lines.append(f"- `{file_name(piece)}`: narration, segments {segs}, source {span}, target {duration:.1f} s, {chars} characters, {marks} break mark{'s' if marks != 1 else ''}{lead}")
+            heard = min((line["coverage"] for line in piece["lines"] if line.get("coverage") is not None), default=1.0)
+            thin = f", coverage {heard:.0%} (check breaks by ear)" if heard < recordings.COVERAGE_MIN else ""
+            lines.append(f"- `{file_name(piece)}`: narration, segments {segs}, source {span}, target {duration:.1f} s, {chars} characters, {marks} break mark{'s' if marks != 1 else ''}{lead}{thin}")
     return lines

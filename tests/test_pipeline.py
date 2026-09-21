@@ -1306,6 +1306,21 @@ class FlakyPassFakeAI(PhrasedFakeAI):
         return super().diarize(audio_path, model, reference)
 
 
+class SparseFakeAI(ProfilingFakeAI):
+    """Two short phrases in a 45 s chunk, whatever the pass: the narrator is mostly unheard."""
+
+    def diarize(self, audio_path, model, reference=None):
+        self.diarize_calls.append({"path": Path(audio_path), "reference": reference})
+        if reference is None:
+            return [{"speaker": "A", "start": 0.0, "end": 9.0, "text": SINHALA}]
+        if Path(audio_path).name != "0001_source.wav":
+            return [{"speaker": "narrator", "start": 0.2, "end": 20.2, "text": "E " + SINHALA}]
+        return [
+            {"speaker": "narrator", "start": 0.0, "end": 4.0, "text": "A " + SINHALA},
+            {"speaker": "narrator", "start": 40.0, "end": 44.0, "text": "D " + SINHALA},
+        ]
+
+
 def chunk_passes(ai) -> list[str]:
     return [call["path"].name for call in ai.diarize_calls if call["reference"] is not None]
 
@@ -1354,3 +1369,33 @@ def test_a_failing_extra_pass_warns_and_keeps_the_first_passs_phrases(tmp_path):
     assert any("Second diarizer pass failed on chunk 1: diarizer busy" in warning for warning in warnings)
     assert not any("Third diarizer pass" in warning for warning in warnings)
     assert db.one("SELECT status FROM jobs WHERE id=?", (job_id,))["status"] == "awaiting_review"
+
+
+def test_thinly_heard_phrases_cap_the_breaks_and_warn(tmp_path):
+    ai = SparseFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai, seconds=65)
+    job_id = start_job(db, project_id)
+
+    pipeline.process_job(job_id)
+
+    first, second = db.all("SELECT * FROM segments WHERE job_id=? ORDER BY segment_index", (job_id,))
+    assert [line["gap_after_ms"] for line in first["lines"]] == [36000, 1000]  # the measured silence is kept as it was
+    assert [line["break_s"] for line in first["lines"]] == [1.0, 1.0]
+    assert [line["coverage"] for line in first["lines"]] == [0.18, 0.18]
+    assert [line["coverage"] for line in second["lines"]] == [1.0]
+    warnings = db.one("SELECT * FROM jobs WHERE id=?", (job_id,))["warnings"] or []
+    assert "Phrases cover 18% of segment 1; breaks over 1.0 s capped" in warnings
+    assert not any("segment 2" in warning for warning in warnings if "Phrases cover" in warning)
+
+
+def test_full_phrase_coverage_leaves_the_measured_breaks_alone(tmp_path):
+    ai = PhrasedFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai, seconds=65)
+    job_id = start_job(db, project_id)
+
+    pipeline.process_job(job_id)
+
+    first = db.one("SELECT * FROM segments WHERE job_id=? AND segment_index=1", (job_id,))
+    assert [line["break_s"] for line in first["lines"]] == [0.6, 0.4, 0.6]
+    assert [line["coverage"] for line in first["lines"]] == [0.97, 0.97, 0.97]
+    assert not any("Phrases cover" in warning for warning in db.one("SELECT * FROM jobs WHERE id=?", (job_id,))["warnings"] or [])

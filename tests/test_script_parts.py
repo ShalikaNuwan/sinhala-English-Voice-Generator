@@ -95,3 +95,17 @@ def test_index_notes_silence_before_narration_that_resumes_late():
     ])
     lines = script_parts.index_lines(script_parts.expand(parts))
     assert lines[-1].endswith("0 break marks, starts 5.0 s after the previous file")
+
+
+def test_index_marks_a_part_the_diarizer_barely_heard():
+    thin = [dict(line("A.", 0.6, 0, 8000), coverage=0.97), dict(line("B.", None, 8600, 12000), coverage=0.42)]
+    lines = script_parts.index_lines(script_parts.expand(script_parts.plan_parts([seg(1, lines=thin)])))
+
+    assert lines[-1].endswith(", coverage 42% (check breaks by ear)")  # the lowest of the part's lines
+
+
+def test_index_says_nothing_about_coverage_when_the_phrases_are_full():
+    full = [dict(line("A.", 0.6, 0, 8000), coverage=0.97)]
+    lines = script_parts.index_lines(script_parts.expand(script_parts.plan_parts([seg(1, lines=full)])))
+
+    assert "coverage" not in lines[-1]

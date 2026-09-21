@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from app import breaks
 
 
@@ -114,3 +116,34 @@ def test_a_single_oversize_line_is_emitted_alone():
 def test_runs_with_nothing_or_an_earlier_next_phrase():
     assert breaks.runs([], 1000) == []
     assert breaks.runs([phrase(0, 900)], 1000, next_phrase_start_ms=800)[0]["gap_after_ms"] == 0
+
+
+def test_coverage_is_what_the_phrases_fill_of_the_segment():
+    assert breaks.coverage([phrase(0, 4000), phrase(40000, 44000)], 0, 45000) == pytest.approx(8 / 45)
+    assert breaks.coverage([phrase(0, 45000)], 0, 45000) == 1.0
+    # A phrase reaching past the segment counts only as far as the segment goes.
+    assert breaks.coverage([phrase(-1000, 5000)], 0, 10000) == 0.5
+    assert breaks.coverage([], 0, 10000) == 0.0
+    assert breaks.coverage([phrase(0, 100)], 5000, 5000) == 1.0
+
+
+def test_coverage_does_not_count_overlapping_phrases_twice():
+    assert breaks.coverage([phrase(0, 6000), phrase(4000, 9000)], 0, 10000) == 0.9
+    assert breaks.coverage([phrase(0, 9000), phrase(2000, 3000)], 0, 10000) == 0.9
+
+
+def test_break_seconds_honours_a_lower_cap():
+    assert breaks.break_seconds(2500, "She never came home.", cap_ms=breaks.GUARDED_MAX_MS) == 1.0
+    assert breaks.break_seconds(600, "She never came home.", cap_ms=breaks.GUARDED_MAX_MS) == 0.6
+    assert breaks.break_seconds(2500, "She never came home.") == 2.5
+
+
+def test_attach_breaks_caps_every_break_when_the_phrases_are_thin():
+    run_list = breaks.runs([phrase(0, 8000, "A"), phrase(10500, 15000, "B")], 15600)
+    lines = [{"text": "First line.", "runs": [1]}, {"text": "Second line.", "runs": [2]}]
+
+    capped = breaks.attach_breaks(lines, run_list, cap_ms=breaks.GUARDED_MAX_MS)
+
+    assert [line["gap_after_ms"] for line in capped] == [2500, 600]  # the measured silence is kept as it was
+    assert [line["break_s"] for line in capped] == [1.0, 0.6]
+    assert [line["break_s"] for line in breaks.attach_breaks(lines, run_list)] == [2.5, 0.6]

@@ -114,6 +114,12 @@ class Pipeline:
         run_list = breaks.runs(phrases, segment["end_ms"], self._next_phrase_start(job["id"], segment["segment_index"])) if phrases else []
         if not run_list and config.get("detect_recordings", self.config.detect_recordings):
             self._warn(job["id"], f"No spoken phrases for segment {segment['segment_index']}; its breaks will use defaults")
+        # Silence the diarizer never explained is not a measured pause; cap what it would write.
+        cov = breaks.coverage(phrases, segment["start_ms"], segment["end_ms"]) if phrases else 1.0
+        cap_ms = breaks.BREAK_MAX_MS
+        if cov < recordings.COVERAGE_MIN:
+            cap_ms = breaks.GUARDED_MAX_MS
+            self._warn(job["id"], f"Phrases cover {cov:.0%} of segment {segment['segment_index']}; breaks over 1.0 s capped")
         run_texts = [run["text"] for run in run_list] or None
         adaptation = self._tracked_call(
             job["id"], segment["id"], "adaptation", config["text_model"], faithful_text,
@@ -125,7 +131,8 @@ class Pipeline:
         lines: list[dict] = []
         if run_list:
             lines_ok = bool(raw_lines) and breaks.covers_runs(raw_lines, len(run_list))
-            lines = breaks.attach_breaks(raw_lines, run_list)
+            lines = breaks.attach_breaks(raw_lines, run_list, cap_ms=cap_ms)
+            lines = [dict(line, coverage=round(cov, 2)) for line in lines]
         narration_text = "\n\n".join(line["text"] for line in lines) if lines else adaptation.narration_text
         return narration_text, style, lines, lines_ok, len(run_list)
 

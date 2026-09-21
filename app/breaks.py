@@ -16,6 +16,8 @@ FLOW_GAP_MS = 150
 SENTENCE_MIN_MS = 400
 # ElevenLabs' ceiling for one break tag.
 BREAK_MAX_MS = 3000
+# The ceiling when the diarizer heard too little of a segment to trust its silences.
+GUARDED_MAX_MS = 1000
 # ElevenLabs v2 already pauses about this long at a comma; a smaller mark only spends the tag budget.
 MIN_MARK_MS = 300
 # For segments without phrase data.
@@ -47,18 +49,37 @@ def runs(phrases: list[dict], segment_end_ms: int, next_phrase_start_ms: int | N
     return result
 
 
+def coverage(phrases: list[dict], start_ms: int, end_ms: int) -> float:
+    """How much of a segment the diarizer actually heard as speech, 0 to 1.
+
+    Phrases are clamped to the segment and an overlap is counted once. A segment with no length
+    has nothing to cover, so it counts as covered.
+    """
+    length = end_ms - start_ms
+    if length <= 0:
+        return 1.0
+    heard = 0
+    reached = start_ms
+    for phrase in sorted(phrases, key=lambda item: item["start_ms"]):
+        begin, finish = max(start_ms, phrase["start_ms"], reached), min(end_ms, phrase["end_ms"])
+        if finish > begin:
+            heard += finish - begin
+            reached = finish
+    return heard / length
+
+
 def ends_sentence(text: str) -> bool:
     return text.rstrip().rstrip(_CLOSERS).endswith((".", "!", "?", "…"))
 
 
-def break_seconds(gap_ms: int, line_text: str) -> float | None:
+def break_seconds(gap_ms: int, line_text: str, cap_ms: int = BREAK_MAX_MS) -> float | None:
     """The break to write after a line, from the measured silence; None when punctuation is enough."""
     if ends_sentence(line_text):
         gap_ms = max(gap_ms, SENTENCE_MIN_MS)
     if gap_ms < MIN_MARK_MS:
         return None
     # Python rounds half to even on exact quarter-seconds (250 ms -> 0.2); the 50 ms is inaudible.
-    return round(min(gap_ms, BREAK_MAX_MS) / 1000, 1)
+    return round(min(gap_ms, cap_ms) / 1000, 1)
 
 
 def mark(seconds: float) -> str:
@@ -73,8 +94,11 @@ def covers_runs(lines: list[dict], run_count: int) -> bool:
     return used == list(range(1, run_count + 1))
 
 
-def attach_breaks(lines: list[dict], run_list: list[dict]) -> list[dict]:
-    """Give each line the times and trailing silence of the runs it covers, and the break to write."""
+def attach_breaks(lines: list[dict], run_list: list[dict], cap_ms: int = BREAK_MAX_MS) -> list[dict]:
+    """Give each line the times and trailing silence of the runs it covers, and the break to write.
+
+    The measured silence is always kept as it was; only the mark written from it obeys `cap_ms`.
+    """
     result = []
     for line in lines:
         covered = [run_list[number - 1] for number in line.get("runs", []) if 1 <= number <= len(run_list)]
@@ -87,7 +111,7 @@ def attach_breaks(lines: list[dict], run_list: list[dict]) -> list[dict]:
             "start_ms": covered[0]["start_ms"] if covered else None,
             "end_ms": covered[-1]["end_ms"] if covered else None,
             "gap_after_ms": gap,
-            "break_s": break_seconds(gap, text),
+            "break_s": break_seconds(gap, text, cap_ms),
         })
     return result
 
