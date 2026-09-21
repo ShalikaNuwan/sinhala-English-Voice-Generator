@@ -1184,7 +1184,7 @@ def test_script_parts_export_writes_marked_lines_around_recordings(tmp_path):
     assert Path(written["03_narration.txt"]).read_text(encoding="utf-8") == 'Line 1. <break time="0.4s" />\nLine 1.\n'
     assert 10100 <= pipeline.audio.probe(Path(written["02_recording_segment002.wav"])).duration_ms <= 10500
     index = Path(written["index.md"]).read_text(encoding="utf-8")
-    assert "`01_narration.txt`: narration, segments 1, source 0.0-19.9 s, target 19.9 s" in index
+    assert "`01_narration.txt`: narration, segment 1, source 0.0-19.9 s, target 19.9 s" in index
     assert "`02_recording_segment002.wav`: kept recording, segment 2, source 19.9-30.1 s" in index
     assert "`03_narration.txt`: narration, segments 3, 4, source 30.1-65.0 s" in index
 
@@ -1582,9 +1582,9 @@ def test_a_reviewers_script_edit_reaches_the_export_with_the_measured_breaks(tmp
     edited = db.one("SELECT * FROM segments WHERE id=?", (first["id"],))
     assert [line["text"] for line in edited["lines"]] == ["Edited one.", "Edited two", "Edited three."]
     assert [line["runs"] for line in edited["lines"]] == [line["runs"] for line in first["lines"]]
-    assert [line["break_s"] for line in edited["lines"]] == [0.6, 0.6, 0.6]  # the unpunctuated line keeps its measured 600 ms
+    assert [line["break_s"] for line in edited["lines"]] == [0.6, 0.3, 0.6]  # the line that lost its full stop drops to its measured 300 ms
     written = pipeline.export_script_parts(project_id)
-    assert Path(written["01_narration.txt"]).read_text(encoding="utf-8").startswith('Edited one. <break time="0.6s" />\nEdited two <break time="0.6s" />\n')
+    assert Path(written["01_narration.txt"]).read_text(encoding="utf-8").startswith('Edited one. <break time="0.6s" />\nEdited two <break time="0.3s" />\n')
 
 
 def test_a_reshaped_script_edit_drops_the_lines_and_exports_with_default_breaks(tmp_path):

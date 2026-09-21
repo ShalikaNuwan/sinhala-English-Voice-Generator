@@ -54,7 +54,7 @@ def test_index_lines_report_marks_and_target_length():
 
     lines = script_parts.index_lines(pieces)
 
-    assert lines[-2] == "- `01_narration.txt`: narration, segments 1, source 0.0-12.0 s, target 12.0 s, 28 characters, 1 break mark"
+    assert lines[-2] == "- `01_narration.txt`: narration, segment 1, source 0.0-12.0 s, target 12.0 s, 28 characters, 1 break mark"
     assert lines[-1] == "- `02_recording_segment002.wav`: kept recording, segment 2, source 12.0-20.0 s, duration 8.0 s"
 
 
