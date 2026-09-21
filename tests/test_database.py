@@ -75,3 +75,26 @@ def test_initialize_adds_kind_and_warnings_to_an_older_database(tmp_path):
 
     assert db.one("SELECT * FROM segments WHERE id='s1'")["kind"] == "narration"
     assert db.one("SELECT * FROM jobs WHERE id='j1'")["warnings"] == []
+
+
+def test_initialize_adds_phrases_and_lines_to_an_older_database(tmp_path):
+    import sqlite3
+
+    from app.database import Database
+
+    path = tmp_path / "old.db"
+    with sqlite3.connect(path) as connection:
+        connection.executescript(
+            "CREATE TABLE segments (id TEXT PRIMARY KEY, job_id TEXT NOT NULL, project_id TEXT NOT NULL, "
+            "segment_index INTEGER NOT NULL, start_ms INTEGER NOT NULL, end_ms INTEGER NOT NULL, "
+            "source_audio_path TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'narration', style_json TEXT NOT NULL DEFAULT '{}', "
+            "qa_json TEXT NOT NULL DEFAULT '{}', updated_at TEXT NOT NULL);"
+            "INSERT INTO segments(id, job_id, project_id, segment_index, start_ms, end_ms, source_audio_path, updated_at) "
+            "VALUES ('s1', 'j1', 'p1', 1, 0, 1000, 'x.wav', 'now');"
+        )
+
+    db = Database(path)
+    db.initialize()
+
+    row = db.one("SELECT * FROM segments WHERE id='s1'")
+    assert row["phrases"] == [] and row["lines"] == []

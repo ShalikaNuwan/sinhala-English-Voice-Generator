@@ -67,7 +67,7 @@ def test_adaptation_has_documented_defaults_and_a_stable_style_contract():
     assert adaptation.pause_before_ms == 0
     assert adaptation.pause_after_ms == 0
     # app/direction.py reads these keys from the stored style; the set must not drift.
-    style = adaptation.model_dump(exclude={"narration_text"})
+    style = adaptation.model_dump(exclude={"narration_text", "lines"})
     assert set(style) == {"beat", "delivery", "pace", "emphasis", "pause_before_ms", "pause_after_ms", "emotion"}
     # The adaptation prompt names these beats by hand; keep prompt and schema in sync.
     assert set(get_args(NarrationAdaptation.model_fields["beat"].annotation)) == {
@@ -376,3 +376,49 @@ def test_synthesis_still_uses_openai_when_no_other_provider_is_configured(tmp_pa
     assert captured["voice"] == "cedar"
     assert captured["model"] == "gpt-4o-mini-tts"
     assert "instructions" in captured  # the full brief still goes to OpenAI
+
+
+def test_adaptation_with_runs_asks_for_one_line_per_run():
+    captured = {}
+
+    class Responses:
+        def parse(self, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(output_parsed=NarrationAdaptation(narration_text="ok"))
+
+    ai = AIClient.__new__(AIClient)
+    ai.client = SimpleNamespace(responses=Responses())
+
+    ai.adapt("She said it. He left.", "m", {}, runs=["ඇය කිව්වා", "එයා ගියා"])
+
+    system = captured["input"][0]["content"]
+    user = captured["input"][1]["content"]
+    assert "one line per run" in system
+    assert "Spoken runs, numbered, in order:\n1. ඇය කිව්වා\n2. එයා ගියා" in user
+
+
+def test_adaptation_without_runs_keeps_the_passage_prompt():
+    captured = {}
+
+    class Responses:
+        def parse(self, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(output_parsed=NarrationAdaptation(narration_text="ok"))
+
+    ai = AIClient.__new__(AIClient)
+    ai.client = SimpleNamespace(responses=Responses())
+
+    ai.adapt("x", "m", {})
+
+    assert "one line per run" not in captured["input"][0]["content"]
+    assert "Spoken runs" not in captured["input"][1]["content"]
+
+
+def test_adaptation_lines_parse_and_default_to_empty():
+    from app.schemas import ScriptLine
+
+    adaptation = NarrationAdaptation(narration_text="A.\n\nB.", lines=[ScriptLine(text="A.", runs=[1]), ScriptLine(text="B.", runs=[2, 3])])
+    assert [line.runs for line in adaptation.lines] == [[1], [2, 3]]
+    assert NarrationAdaptation(narration_text="x").lines == []
+    style = adaptation.model_dump(exclude={"narration_text", "lines"})
+    assert "lines" not in style

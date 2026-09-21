@@ -130,6 +130,7 @@ class AIClient:
         model: str,
         narrator_profile: dict,
         previous_narration: str = "",
+        runs: list[str] | None = None,
     ) -> NarrationAdaptation:
         context = ""
         if previous_narration:
@@ -142,40 +143,52 @@ class AIClient:
             f"{context}"
             f"Faithful English to adapt:\n<<<\n{faithful_en}\n>>>"
         )
+        if runs:
+            numbered = "\n".join(f"{number}. {text}" for number, text in enumerate(runs, start=1))
+            user_content += f"\nSpoken runs, numbered, in order:\n{numbered}"
+        system = (
+            "You turn faithful English into a script that a storyteller will speak aloud as the "
+            "voice-over of a true-crime documentary. Write for the ear, not the page:\n"
+            "- Short sentences, one idea each. Use contractions. Avoid formal written-English "
+            "constructions.\n"
+            "- Put an ellipsis (…) where the narrator should hold a beat, at most once per passage, and a dash "
+            "(—) for a change of thought or an afterthought, at most twice. Use the characters … and — "
+            "themselves, not ... or --, and only where a person telling the story would actually pause.\n"
+            "- Start a new paragraph (blank line) only at a real shift in the story, at most twice per passage.\n"
+            "- Write dates, times, and numbers the way they are said aloud, for example "
+            "'May 1st, 2010' and '4:51 in the morning'.\n"
+            "- Keep quoted speech from 911 calls and witnesses as plain spoken lines.\n"
+            "- Collapse incomplete false starts and repetitions the speaker clearly did not intend.\n"
+            "Hard limit, which overrides every rule above. Do not add, remove, weaken, or strengthen any "
+            "factual claim. Preserve every distinct name, date, number, place, and causal link. If a rule "
+            "above would cost you a detail or soften a hedge, break the rule and keep the fact. Preserve "
+            "supported suspense and emphasis. Use the narrator profile.\n"
+            "Always: narration_text is only the words to be spoken. No stage directions, no bracketed or "
+            "parenthetical cues, no markdown, no headings, no speaker labels, no sound-effect notes. "
+            "Every note about performance goes in the delivery field instead.\n"
+            "Also return: beat (where this passage sits in the story: setup, build, reveal, aftermath, or "
+            "reflection); delivery (one sentence of direction to the voice actor for this passage, under "
+            "300 characters); emotion (the tone, in two or three words); pace; emphasis (two or three short "
+            "phrases copied from narration_text character for character, never a paraphrase, never a phrase "
+            "that is not in the script); and pause_before_ms and pause_after_ms (silence in milliseconds; "
+            "your number is added to the neighbouring passage's request, and anything under 300 is treated "
+            "as 300 and nothing exceeds the narrator's longest measured pause, so leave both at 0 unless this "
+            "passage really needs a longer pause than the narrator's usual gap)."
+        )
+        if runs:
+            system += (
+                "\nThe Sinhala was spoken as the numbered runs in the user message. Return lines: one line per run, "
+                "in the same order, each rendering exactly that run's content, with runs listing the number it "
+                "covers. Merge two neighbouring runs into one line only when English grammar leaves no other "
+                "choice, and list both numbers. Every run must be covered exactly once. narration_text must be "
+                "the lines joined by blank lines."
+            )
         response = self.client.responses.parse(
             model=model,
             input=[
                 {
                     "role": "system",
-                    "content": (
-                        "You turn faithful English into a script that a storyteller will speak aloud as the "
-                        "voice-over of a true-crime documentary. Write for the ear, not the page:\n"
-                        "- Short sentences, one idea each. Use contractions. Avoid formal written-English "
-                        "constructions.\n"
-                        "- Put an ellipsis (…) where the narrator should hold a beat, at most once per passage, and a dash "
-                        "(—) for a change of thought or an afterthought, at most twice. Use the characters … and — "
-                        "themselves, not ... or --, and only where a person telling the story would actually pause.\n"
-                        "- Start a new paragraph (blank line) only at a real shift in the story, at most twice per passage.\n"
-                        "- Write dates, times, and numbers the way they are said aloud, for example "
-                        "'May 1st, 2010' and '4:51 in the morning'.\n"
-                        "- Keep quoted speech from 911 calls and witnesses as plain spoken lines.\n"
-                        "- Collapse incomplete false starts and repetitions the speaker clearly did not intend.\n"
-                        "Hard limit, which overrides every rule above. Do not add, remove, weaken, or strengthen any "
-                        "factual claim. Preserve every distinct name, date, number, place, and causal link. If a rule "
-                        "above would cost you a detail or soften a hedge, break the rule and keep the fact. Preserve "
-                        "supported suspense and emphasis. Use the narrator profile.\n"
-                        "Always: narration_text is only the words to be spoken. No stage directions, no bracketed or "
-                        "parenthetical cues, no markdown, no headings, no speaker labels, no sound-effect notes. "
-                        "Every note about performance goes in the delivery field instead.\n"
-                        "Also return: beat (where this passage sits in the story: setup, build, reveal, aftermath, or "
-                        "reflection); delivery (one sentence of direction to the voice actor for this passage, under "
-                        "300 characters); emotion (the tone, in two or three words); pace; emphasis (two or three short "
-                        "phrases copied from narration_text character for character, never a paraphrase, never a phrase "
-                        "that is not in the script); and pause_before_ms and pause_after_ms (silence in milliseconds; "
-                        "your number is added to the neighbouring passage's request, and anything under 300 is treated "
-                        "as 300 and nothing exceeds the narrator's longest measured pause, so leave both at 0 unless this "
-                        "passage really needs a longer pause than the narrator's usual gap)."
-                    ),
+                    "content": system,
                 },
                 {
                     "role": "user",
