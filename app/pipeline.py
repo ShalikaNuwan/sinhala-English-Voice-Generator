@@ -86,11 +86,23 @@ class Pipeline:
     def _next_phrase_start(self, job_id: str, segment_index: int) -> int | None:
         """Where the narrator next speaks after this segment, if the next segment is narration with phrases."""
         following = self.db.one(
-            "SELECT kind, phrases_json FROM segments WHERE job_id=? AND segment_index=?", (job_id, segment_index + 1),
+            "SELECT kind, start_ms, phrases_json FROM segments WHERE job_id=? AND segment_index=?", (job_id, segment_index + 1),
         )
-        if following and following.get("kind") == "narration" and following.get("phrases"):
-            return following["phrases"][0]["start_ms"]
+        if not following:
+            return None
+        if following.get("kind") == "original":
+            # The recording piece starts PAD_MS before the recorded voice; the narrator's silence runs up to the voice.
+            return following["start_ms"] + recordings.PAD_MS
+        if following.get("kind") == "narration" and following.get("phrases"):
+            return min(p["start_ms"] for p in following["phrases"])
         return None
+
+    def _stored_lines_ok(self, job_id: str, segment: dict) -> bool:
+        """Whether the segment's stored lines still cover its spoken runs (True when it has neither)."""
+        run_list = breaks.runs(segment.get("phrases") or [], segment["end_ms"], self._next_phrase_start(job_id, segment["segment_index"]))
+        if not run_list:
+            return True
+        return bool(segment.get("lines")) and breaks.covers_runs(segment["lines"], len(run_list))
 
     def _adapt_lines(self, ai: AIClient, job: dict, project: dict, segment: dict, faithful_text: str, previous_narration: str):
         """Adapt a segment as lines over its spoken runs; fall back to a passage when it has no phrases.
@@ -544,7 +556,7 @@ class Pipeline:
             style = segment["style"] or {}
             shaped = None
             revoiced = False
-            lines_ok = True
+            lines_ok = self._stored_lines_ok(job["id"], segment)
             if stage == "translation":
                 faithful = self._tracked_call(
                     job["id"], segment_id, "translation", config["text_model"], segment["transcript_si"],

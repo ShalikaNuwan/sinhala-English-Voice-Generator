@@ -578,6 +578,7 @@ def test_detection_failure_on_a_chunk_keeps_it_as_narration_with_a_warning(tmp_p
     assert [s["kind"] for s in segments] == ["narration", "narration"]
     warnings = db.one("SELECT * FROM jobs WHERE id=?", (job_id,))["warnings"]
     assert any("Recording detection failed on chunk 1" in w for w in warnings)
+    assert any("No spoken phrases for segment 1" in w for w in warnings)
     assert db.one("SELECT status FROM jobs WHERE id=?", (job_id,))["status"] == "awaiting_review"
 
 
@@ -1193,6 +1194,8 @@ def test_narrator_phrases_are_stored_per_narration_segment(tmp_path):
     assert segments[1]["phrases"] == []  # the kept recording
     assert segments[2]["phrases"] == [{"start_ms": 30150, "end_ms": 45000, "text": SINHALA}]
     assert segments[3]["phrases"] == [{"start_ms": 45000, "end_ms": 65000, "text": SINHALA}]
+    # The narrator's silence before the kept recording runs to the recorded voice at 20 s, not the padded piece edge.
+    assert segments[0]["lines"][0]["gap_after_ms"] == 150
 
 
 def test_runs_reach_the_adaptation_and_lines_carry_the_measured_breaks(tmp_path):
@@ -1228,6 +1231,12 @@ def test_lines_that_do_not_cover_the_runs_go_to_review(tmp_path):
     assert first["qa_status"] == "needs_review"
     assert "Script lines do not follow the spoken runs" in first["qa"]["issues"]
     assert [line["runs"] for line in first["lines"]] == [[1], [1, 2]]
+
+    pipeline.regenerate_segment(first["id"], "tts")
+
+    revoiced = db.one("SELECT * FROM segments WHERE id=?", (first["id"],))
+    assert revoiced["qa_status"] == "needs_review"
+    assert "Script lines do not follow the spoken runs" in revoiced["qa"]["issues"]
 
 
 def test_a_segment_without_phrases_adapts_as_a_passage_with_a_warning(tmp_path):
