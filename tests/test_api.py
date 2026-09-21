@@ -224,3 +224,31 @@ def test_job_configuration_shapes_pauses_by_default():
     assert config["align_model"] == "whisper-1"
     assert config["shape_pauses"] is True
     assert job_configuration(ProcessRequest(shape_pauses=False, align_model="w2"), Settings(openai_api_key="unused"))["shape_pauses"] is False
+
+
+def test_job_configuration_voices_by_default_and_can_be_text_only():
+    from app.config import Settings
+    from app.main import job_configuration
+    from app.schemas import ProcessRequest
+
+    assert job_configuration(ProcessRequest(), Settings(openai_api_key="unused"))["voice_stage"] is True
+    assert job_configuration(ProcessRequest(voice_stage=False), Settings(openai_api_key="unused"))["voice_stage"] is False
+
+
+def test_script_parts_endpoint_returns_files_or_a_clear_refusal(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    import app.config
+    import app.main
+
+    importlib.reload(app.config)
+    module = importlib.reload(app.main)
+    from fastapi.testclient import TestClient
+
+    client = TestClient(module.app)
+    project_id = client.post("/api/projects", json={"title": "Parts", "topic": "History"}).json()["id"]
+
+    assert client.post(f"/api/projects/{project_id}/export/parts").status_code == 409
+
+    monkeypatch.setattr(module.pipeline, "export_script_parts", lambda pid: {"01_narration.txt": str(module.settings.data_dir / "projects" / pid / "exports" / "script_parts" / "01_narration.txt")})
+    files = client.post(f"/api/projects/{project_id}/export/parts").json()
+    assert files == {"01_narration.txt": f"/media/projects/{project_id}/exports/script_parts/01_narration.txt"}

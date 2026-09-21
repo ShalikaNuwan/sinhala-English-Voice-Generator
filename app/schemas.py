@@ -26,6 +26,8 @@ class ProcessRequest(BaseModel):
     align_model: str | None = None
     shape_pauses: bool | None = None
     master_voice: bool | None = None
+    # False stops a job after the reviewed script: nothing is voiced, so the voice can be made elsewhere.
+    voice_stage: bool | None = None
     human_review_gate: bool = True
 
 

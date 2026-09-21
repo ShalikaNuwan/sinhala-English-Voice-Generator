@@ -43,6 +43,7 @@ def job_configuration(payload: ProcessRequest, config: Settings) -> dict:
         "align_model": payload.align_model or config.align_model,
         "shape_pauses": payload.shape_pauses if payload.shape_pauses is not None else config.shape_pauses,
         "master_voice": payload.master_voice if payload.master_voice is not None else config.master_voice,
+        "voice_stage": payload.voice_stage if payload.voice_stage is not None else config.voice_stage,
         "human_review_gate": payload.human_review_gate,
     }
 
@@ -265,3 +266,14 @@ def export_project(project_id: str) -> dict:
     export_dir = settings.data_dir / "projects" / project_id / "exports"
     names = ["final_en.wav", "final_en.mp3", "transcript_si.json", "script_en.json"]
     return {name: media_url(str(export_dir / name)) for name in names if (export_dir / name).exists()}
+
+
+@app.post("/api/projects/{project_id}/export/parts")
+def export_script_parts(project_id: str) -> dict:
+    """The reviewed script as ordered narration parts around the kept recordings, for voicing elsewhere."""
+    require_project(project_id)
+    try:
+        written = pipeline.export_script_parts(project_id)
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return {name: media_url(path) for name, path in written.items()}

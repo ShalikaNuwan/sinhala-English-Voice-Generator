@@ -240,6 +240,19 @@ does not line up either, the raw voice is kept and the job says so. `SHAPE_PAUSE
 `scripts/pause_listening_set.py <job_id> <segment_index...>` copies the raw and shaped files for
 chosen segments to `data/pause_listening/` with a pause table for each, for listening.
 
+## Voicing outside the pipeline
+
+Tick "Text only (voice elsewhere)" before starting processing (or send `voice_stage: false`, or set
+`VOICE_STAGE=0`) and a job stops after transcription, translation, adaptation and QA: nothing is
+voiced and no voice credit is spent. Review the scripts as usual, then click "Export script parts"
+(`POST /api/projects/{id}/export/parts`, or `scripts/export_script_parts.py`). The export is written
+to `exports/script_parts/`: every run of narration between two kept recordings becomes one numbered
+text file, every kept recording is copied as a numbered WAV, and `index.md` lists the playing order
+with source times and character counts. Voice each narration file on its own (for example in the
+ElevenLabs web app, which has per-request character limits of 5,000 on v3 and 10,000 on
+Multilingual v2), then place the recording files between the voiced parts in your editor. The
+narration text is the adapted script, with dates and numbers written the way they are spoken.
+
 ## Voicing with ElevenLabs
 
 `TTS_PROVIDER=elevenlabs` sends the voicing stage to ElevenLabs instead of the OpenAI speech

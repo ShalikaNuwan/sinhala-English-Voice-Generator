@@ -32,6 +32,9 @@ class Settings:
     master_voice: bool = field(
         default_factory=lambda: os.getenv("MASTER_VOICE", "1").strip().lower() not in {"0", "false", "no"}
     )
+    voice_stage: bool = field(
+        default_factory=lambda: os.getenv("VOICE_STAGE", "1").strip().lower() not in {"0", "false", "no"}
+    )
     # Voicing can be handed to ElevenLabs; every text stage stays on OpenAI either way.
     tts_provider: str = field(default_factory=lambda: os.getenv("TTS_PROVIDER", "openai").strip().lower())
     elevenlabs_api_key: str | None = field(default_factory=lambda: os.getenv("ELEVENLABS_API_KEY"))

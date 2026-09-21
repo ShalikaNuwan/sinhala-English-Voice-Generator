@@ -8,7 +8,7 @@ import uuid
 from pathlib import Path
 from typing import Callable, TypeVar
 
-from . import pauses, recordings, speaking_profile
+from . import pauses, recordings, script_parts, speaking_profile
 from .ai import AIClient, PROMPT_VERSION
 from .audio import AudioError, AudioService
 from .config import Settings
@@ -363,22 +363,24 @@ class Pipeline:
             (adaptation.narration_text, json.dumps(style), utc_now(), segment_id),
         )
 
-        stem = f"{segment['segment_index']:04d}_r{segment['revision']:02d}"
-        generated = self._generated_dir(project["id"], job_id)
-        raw_path, tts_path = generated / f"{stem}_raw.wav", generated / f"{stem}.wav"
-        self._tracked_call(
-            job_id, segment_id, "tts", config["tts_model"], adaptation.narration_text,
-            lambda: ai.synthesize(
-                adaptation.narration_text, config["tts_model"], config["voice"], style, raw_path,
-                profile, previous_style, persona, speed, previous_text=previous_context,
-            ),
-        )
-        shaped = self._shape_pauses(ai, job, segment, raw_path, tts_path, adaptation.narration_text, profile)
-        tts_duration = self.audio.probe(tts_path).duration_ms
-        self.db.execute(
-            "UPDATE segments SET tts_audio_path=?, tts_duration_ms=?, status='generated', updated_at=? WHERE id=?",
-            (str(tts_path), tts_duration, utc_now(), segment_id),
-        )
+        shaped, tts_duration = None, None
+        if config.get("voice_stage", self.config.voice_stage):
+            stem = f"{segment['segment_index']:04d}_r{segment['revision']:02d}"
+            generated = self._generated_dir(project["id"], job_id)
+            raw_path, tts_path = generated / f"{stem}_raw.wav", generated / f"{stem}.wav"
+            self._tracked_call(
+                job_id, segment_id, "tts", config["tts_model"], adaptation.narration_text,
+                lambda: ai.synthesize(
+                    adaptation.narration_text, config["tts_model"], config["voice"], style, raw_path,
+                    profile, previous_style, persona, speed, previous_text=previous_context,
+                ),
+            )
+            shaped = self._shape_pauses(ai, job, segment, raw_path, tts_path, adaptation.narration_text, profile)
+            tts_duration = self.audio.probe(tts_path).duration_ms
+            self.db.execute(
+                "UPDATE segments SET tts_audio_path=?, tts_duration_ms=?, status='generated', updated_at=? WHERE id=?",
+                (str(tts_path), tts_duration, utc_now(), segment_id),
+            )
 
         qa = self._tracked_call(
             job_id, segment_id, "qa", config["qa_model"], faithful.english_faithful + adaptation.narration_text,
@@ -637,6 +639,39 @@ class Pipeline:
             "UPDATE segments SET qa_json=?, qa_status='passed', status='approved', updated_at=? WHERE id=?",
             (json.dumps(qa), utc_now(), segment_id),
         )
+
+    def export_script_parts(self, project_id: str, job_id: str | None = None) -> dict[str, str]:
+        """Write the reviewed script as ordered parts around the kept recordings, for voicing elsewhere."""
+        if not job_id:
+            latest = self.db.one("SELECT id FROM jobs WHERE project_id=? ORDER BY created_at DESC LIMIT 1", (project_id,))
+            if not latest:
+                raise RuntimeError("No processing job exists for this project")
+            job_id = latest["id"]
+        segments = self.db.all("SELECT * FROM segments WHERE job_id=? ORDER BY segment_index", (job_id,))
+        parts = script_parts.plan_parts(segments)
+        if not parts:
+            raise RuntimeError("No reviewed narration to export yet")
+        out_dir = self.config.data_dir / "projects" / project_id / "exports" / "script_parts"
+        if out_dir.exists():
+            shutil.rmtree(out_dir)
+        out_dir.mkdir(parents=True)
+        written: dict[str, str] = {}
+        names: list[str] = []
+        for number, part in enumerate(parts, start=1):
+            if part["kind"] == "recording":
+                name = f"{number:02d}_recording_segment{part['segment_index']:03d}.wav"
+                source = Path(part["audio_path"]) if part["audio_path"] else None
+                if source is None or not source.is_file():
+                    raise RuntimeError(f"Kept recording for segment {part['segment_index']} has no audio; regenerate it first")
+                shutil.copyfile(source, out_dir / name)
+            else:
+                name = f"{number:02d}_narration.txt"
+                (out_dir / name).write_text(part["text"] + "\n", encoding="utf-8")
+            names.append(name)
+            written[name] = str(out_dir / name)
+        (out_dir / "index.md").write_text("\n".join(script_parts.index_lines(parts, names)) + "\n", encoding="utf-8")
+        written["index.md"] = str(out_dir / "index.md")
+        return written
 
     def assemble_project(self, project_id: str, job_id: str | None = None) -> dict[str, str]:
         if not job_id:

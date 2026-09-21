@@ -251,14 +251,14 @@ def build_project(tmp_path, ai, seconds: float = 1.0, narrator_profile: dict | N
     return pipeline, db, project_id
 
 
-def start_job(db, project_id, detect_recordings: bool = True, shape_pauses: bool = True):
+def start_job(db, project_id, detect_recordings: bool = True, shape_pauses: bool = True, voice_stage: bool = True):
     job_id = str(uuid.uuid4())
     job_config = {
         "stt_model": "fake-stt", "text_model": "fake-text", "qa_model": "fake-qa",
         "tts_model": "fake-tts", "audio_model": "fake-audio", "voice": "onyx",
         "speed": 0.95,
         "diarize_model": "fake-diarize", "detect_recordings": detect_recordings,
-        "align_model": "fake-align", "shape_pauses": shape_pauses,
+        "align_model": "fake-align", "shape_pauses": shape_pauses, "voice_stage": voice_stage,
         "human_review_gate": True,
     }
     db.execute(
@@ -1080,3 +1080,47 @@ def test_choosing_elevenlabs_without_a_key_is_refused_loudly(tmp_path):
 
     with pytest.raises(RuntimeError):
         Pipeline(db, config)._elevenlabs_config()
+
+
+def test_a_text_only_job_reviews_the_script_without_voicing_anything(tmp_path):
+    ai = ProfilingFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai)
+    job_id = start_job(db, project_id, voice_stage=False)
+
+    pipeline.process_job(job_id)
+
+    segment = db.one("SELECT * FROM segments WHERE project_id=?", (project_id,))
+    assert ai.synthesis_calls == [] and ai.timestamp_calls == 0 if hasattr(ai, "timestamp_calls") else ai.synthesis_calls == []
+    assert segment["narration_en"] == "This is a test."
+    assert segment["tts_audio_path"] is None and segment["tts_duration_ms"] is None
+    assert segment["qa_status"] == "passed" and "duration_ratio" not in segment["qa"]
+    assert db.one("SELECT status FROM jobs WHERE id=?", (job_id,))["status"] == "awaiting_review"
+    assert not db.all("SELECT id FROM model_calls WHERE job_id=? AND stage IN ('tts', 'alignment')", (job_id,))
+
+
+def test_script_parts_export_splits_the_reviewed_script_around_recordings(tmp_path):
+    pipeline, db, project_id, job_id, ai, segments = run_recording_job(tmp_path)
+
+    written = pipeline.export_script_parts(project_id)
+
+    names = list(written)
+    assert names == ["01_narration.txt", "02_recording_segment002.wav", "03_narration.txt", "index.md"]
+    out_dir = Path(written["index.md"]).parent
+    assert out_dir.name == "script_parts" and out_dir.parent.name == "exports"
+    assert Path(written["01_narration.txt"]).read_text(encoding="utf-8") == "This is a test.\n"
+    assert Path(written["03_narration.txt"]).read_text(encoding="utf-8") == "This is a test.\n\nThis is a test.\n"
+    assert 10100 <= pipeline.audio.probe(Path(written["02_recording_segment002.wav"])).duration_ms <= 10500
+    index = Path(written["index.md"]).read_text(encoding="utf-8")
+    assert "`01_narration.txt`: narration, segments 1," in index
+    assert "`02_recording_segment002.wav`: kept recording, segment 2," in index
+    assert "`03_narration.txt`: narration, segments 3, 4," in index
+
+
+def test_script_parts_export_is_refused_when_a_recording_has_no_audio(tmp_path):
+    import pytest
+
+    pipeline, db, project_id, job_id, ai, segments = run_recording_job(tmp_path)
+    db.execute("UPDATE segments SET tts_audio_path=NULL WHERE id=?", (segments[1]["id"],))
+
+    with pytest.raises(RuntimeError, match="no audio"):
+        pipeline.export_script_parts(project_id)

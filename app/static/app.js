@@ -118,6 +118,7 @@ async function refreshJob() {
   const running = ["queued","running"].includes(job.status);
   $("process").disabled = running;
   $("assemble").disabled = running;
+  $("export-parts").disabled = running;
   if (running) {
     clearTimeout(pollTimer); pollTimer = setTimeout(refreshJob, 1800);
   } else {
@@ -290,10 +291,15 @@ $("create").addEventListener("click", (event) => run(event.currentTarget, async 
 }, {label:"Working…"}));
 
 $("process").addEventListener("click", (event) => run(event.currentTarget, async () => {
-  const result = await request(`/api/projects/${currentProject.id}/process`, jsonOptions("POST", {voice:$("voice").value, human_review_gate:true}));
+  const result = await request(`/api/projects/${currentProject.id}/process`, jsonOptions("POST", {voice:$("voice").value, human_review_gate:true, voice_stage:!$("text-only").checked}));
   currentJob = result.job_id;
   await refreshJob();
 }, {label:"Starting…"}));
+
+$("export-parts").addEventListener("click", (event) => run(event.currentTarget, async () => {
+  const files = await request(`/api/projects/${currentProject.id}/export/parts`, {method:"POST"});
+  $("exports").innerHTML = Object.entries(files).map(([name,url]) => `<a href="${url}" download>${escapeHtml(name)}</a>`).join("");
+}, {label:"Exporting…"}));
 
 $("assemble").addEventListener("click", (event) => run(event.currentTarget, async () => {
   await request(`/api/projects/${currentProject.id}/assemble`, {method:"POST"});
