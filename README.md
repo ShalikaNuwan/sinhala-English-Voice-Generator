@@ -243,15 +243,27 @@ chosen segments to `data/pause_listening/` with a pause table for each, for list
 ## Voicing outside the pipeline
 
 Tick "Text only (voice elsewhere)" before starting processing (or send `voice_stage: false`, or set
-`VOICE_STAGE=0`) and a job stops after transcription, translation, adaptation and QA: nothing is
-voiced and no voice credit is spent. Review the scripts as usual, then click "Export script parts"
-(`POST /api/projects/{id}/export/parts`, or `scripts/export_script_parts.py`). The export is written
-to `exports/script_parts/`: every run of narration between two kept recordings becomes one numbered
-text file, every kept recording is copied as a numbered WAV, and `index.md` lists the playing order
-with source times and character counts. Voice each narration file on its own (for example in the
-ElevenLabs web app, which has per-request character limits of 5,000 on v3 and 10,000 on
-Multilingual v2), then place the recording files between the voiced parts in your editor. The
-narration text is the adapted script, with dates and numbers written the way they are spoken.
+`VOICE_STAGE=0`) and a job stops after transcription, detection, translation, adaptation and QA:
+nothing is voiced and no voice credit is spent. Review the scripts as usual, then click "Export
+script parts" (`POST /api/projects/{id}/export/parts`, or `scripts/export_script_parts.py`).
+
+The breaks in the exported script are the narrator's own. The diarizer hears the Sinhala as phrases
+with times; phrases that run on with under 150 ms between them are one flowing run, and a real
+pause ends a run. The adaptation writes the English as one line per run, in order (merging two runs
+only when English grammar forces it), so every line has a measured silence after it. That silence is
+written after the line as `<break time="0.8s" />`, which ElevenLabs Multilingual v2 honours (v3 does
+not read break tags). A line that ends a sentence gets at least 400 ms; nothing exceeds 3.0 s; a
+gap under 150 ms writes no mark. The table lives at the top of `app/breaks.py`. When a segment's
+lines do not cover its runs, QA sends it to review with "Script lines do not follow the spoken
+runs". Segments without phrase data (detection off, or older jobs) export their paragraphs with
+default breaks of 0.9 s between paragraphs and 0.5 s at the end.
+
+The export is written to `exports/script_parts/`: every stretch of narration between two kept
+recordings becomes one or more numbered text files (split at 9,000 characters or 40 break marks,
+since too many marks in one generation destabilise the voice), every kept recording is copied as a
+numbered WAV, and `index.md` lists the playing order with source times, a target length per part,
+and the character and mark counts. Voice each narration file on its own in ElevenLabs, then place the
+recording files between the voiced parts in your editor.
 
 ## Voicing with ElevenLabs
 

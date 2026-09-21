@@ -684,35 +684,32 @@ class Pipeline:
         )
 
     def export_script_parts(self, project_id: str, job_id: str | None = None) -> dict[str, str]:
-        """Write the reviewed script as ordered parts around the kept recordings, for voicing elsewhere."""
+        """Write the reviewed script as ordered parts with break marks, around the kept recordings."""
         if not job_id:
             latest = self.db.one("SELECT id FROM jobs WHERE project_id=? ORDER BY created_at DESC LIMIT 1", (project_id,))
             if not latest:
                 raise RuntimeError("No processing job exists for this project")
             job_id = latest["id"]
         segments = self.db.all("SELECT * FROM segments WHERE job_id=? ORDER BY segment_index", (job_id,))
-        parts = script_parts.plan_parts(segments)
-        if not parts:
+        pieces = script_parts.expand(script_parts.plan_parts(segments))
+        if not pieces:
             raise RuntimeError("No reviewed narration to export yet")
         out_dir = self.config.data_dir / "projects" / project_id / "exports" / "script_parts"
         if out_dir.exists():
             shutil.rmtree(out_dir)
         out_dir.mkdir(parents=True)
         written: dict[str, str] = {}
-        names: list[str] = []
-        for number, part in enumerate(parts, start=1):
-            if part["kind"] == "recording":
-                name = f"{number:02d}_recording_segment{part['segment_index']:03d}.wav"
-                source = Path(part["audio_path"]) if part["audio_path"] else None
+        for piece in pieces:
+            name = script_parts.file_name(piece)
+            if piece["kind"] == "recording":
+                source = Path(piece["audio_path"]) if piece["audio_path"] else None
                 if source is None or not source.is_file():
-                    raise RuntimeError(f"Kept recording for segment {part['segment_index']} has no audio; regenerate it first")
+                    raise RuntimeError(f"Kept recording for segment {piece['segment_index']} has no audio; regenerate it first")
                 shutil.copyfile(source, out_dir / name)
             else:
-                name = f"{number:02d}_narration.txt"
-                (out_dir / name).write_text(part["text"] + "\n", encoding="utf-8")
-            names.append(name)
+                (out_dir / name).write_text(script_parts.render(piece), encoding="utf-8")
             written[name] = str(out_dir / name)
-        (out_dir / "index.md").write_text("\n".join(script_parts.index_lines(parts, names)) + "\n", encoding="utf-8")
+        (out_dir / "index.md").write_text("\n".join(script_parts.index_lines(pieces)) + "\n", encoding="utf-8")
         written["index.md"] = str(out_dir / "index.md")
         return written
 

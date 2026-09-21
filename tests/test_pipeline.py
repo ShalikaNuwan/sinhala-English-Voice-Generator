@@ -1134,23 +1134,37 @@ def test_a_text_only_job_reviews_the_script_without_voicing_anything(tmp_path):
     assert not db.all("SELECT id FROM model_calls WHERE job_id=? AND stage IN ('tts', 'alignment')", (job_id,))
 
 
-def test_script_parts_export_splits_the_reviewed_script_around_recordings(tmp_path):
+def test_script_parts_export_writes_marked_lines_around_recordings(tmp_path):
     pipeline, db, project_id, job_id, ai, segments = run_recording_job(tmp_path)
 
     written = pipeline.export_script_parts(project_id)
 
-    names = list(written)
-    assert names == ["01_narration.txt", "02_recording_segment002.wav", "03_narration.txt", "index.md"]
+    assert list(written) == ["01_narration.txt", "02_recording_segment002.wav", "03_narration.txt", "index.md"]
     out_dir = Path(written["index.md"]).parent
     assert out_dir.name == "script_parts" and out_dir.parent.name == "exports"
-    # RecordingFakeAI's diarize gives each narration piece a single narrator phrase, so each adapts over one run.
-    assert Path(written["01_narration.txt"]).read_text(encoding="utf-8") == "Line 1.\n"
-    assert Path(written["03_narration.txt"]).read_text(encoding="utf-8") == "Line 1.\n\nLine 1.\n"
+    # Segment 1's single run ends at the recording with no measurable gap, but a sentence end always
+    # gets the 0.4 s floor; segments 3 and 4 each have one run, ending the same way.
+    assert Path(written["01_narration.txt"]).read_text(encoding="utf-8") == 'Line 1. <break time="0.4s" />\n'
+    assert Path(written["03_narration.txt"]).read_text(encoding="utf-8") == 'Line 1. <break time="0.4s" />\nLine 1. <break time="0.4s" />\n'
     assert 10100 <= pipeline.audio.probe(Path(written["02_recording_segment002.wav"])).duration_ms <= 10500
     index = Path(written["index.md"]).read_text(encoding="utf-8")
-    assert "`01_narration.txt`: narration, segments 1," in index
-    assert "`02_recording_segment002.wav`: kept recording, segment 2," in index
-    assert "`03_narration.txt`: narration, segments 3, 4," in index
+    assert "`01_narration.txt`: narration, segments 1, source 0.0-19.9 s, target 19.9 s" in index
+    assert "`02_recording_segment002.wav`: kept recording, segment 2, source 19.9-30.1 s" in index
+    assert "`03_narration.txt`: narration, segments 3, 4, source 30.1-65.0 s" in index
+
+
+def test_script_parts_export_writes_measured_breaks(tmp_path):
+    ai = PhrasedFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai, seconds=65)
+    job_id = start_job(db, project_id)
+    pipeline.process_job(job_id)
+
+    written = pipeline.export_script_parts(project_id)
+
+    text = Path(written["01_narration.txt"]).read_text(encoding="utf-8")
+    assert text == 'Line 1. <break time="0.6s" />\nLine 2. <break time="0.4s" />\nLine 3. <break time="0.6s" />\nLine 1. <break time="0.4s" />\n'
+    assert "3 break marks" not in Path(written["index.md"]).read_text(encoding="utf-8")
+    assert "4 break marks" in Path(written["index.md"]).read_text(encoding="utf-8")
 
 
 def test_script_parts_export_is_refused_when_a_recording_has_no_audio(tmp_path):
@@ -1161,6 +1175,15 @@ def test_script_parts_export_is_refused_when_a_recording_has_no_audio(tmp_path):
 
     with pytest.raises(RuntimeError, match="no audio"):
         pipeline.export_script_parts(project_id)
+
+
+def test_old_segments_without_lines_export_with_default_breaks(tmp_path):
+    pipeline, db, project_id, job_id, ai, segments = run_recording_job(tmp_path)
+    db.execute("UPDATE segments SET lines_json='[]', narration_en='Old one.\n\nOld two.' WHERE id=?", (segments[0]["id"],))
+
+    written = pipeline.export_script_parts(project_id)
+
+    assert Path(written["01_narration.txt"]).read_text(encoding="utf-8") == 'Old one. <break time="0.9s" />\nOld two. <break time="0.5s" />\n'
 
 
 def test_narrator_phrases_are_stored_per_narration_segment(tmp_path):
