@@ -236,6 +236,46 @@ class Pipeline:
             self._warn(job_id, f"Recording detection unavailable: {str(exc)[:200]}")
             return None
 
+    def _diarize_chunk(
+        self, job_id: str, ai: AIClient, model: str, chunk_index: int,
+        chunk_start: int, chunk_end: int, chunk_path: Path, reference: Path,
+    ) -> tuple[list[dict], list[recordings.Piece]]:
+        """Diarize a chunk twice, three times while the narrator stays thinly covered, and cut it.
+
+        One diarization call drops spans another returns, and a dropped span becomes a false long
+        break. The first pass stays the base for recording detection and clip transcripts; a later
+        pass only fills stretches it never heard. A failed extra pass is a warning, not a failure.
+        """
+        lead_s = self.audio.chunk_lead_ms(chunk_start) / 1000
+
+        def hear() -> list[dict]:
+            spans = self._tracked_call(
+                job_id, None, "diarization", model, str(chunk_path),
+                lambda: ai.diarize(chunk_path, model, reference),
+            )
+            # The chunk file starts CHUNK_PAD_MS before the planned chunk; diarizer times are file-relative.
+            return [dict(item, start=float(item["start"]) - lead_s, end=float(item["end"]) - lead_s) for item in spans]
+
+        def cut(spans: list[dict]) -> list[recordings.Piece]:
+            originals = recordings.original_spans(spans, chunk_end - chunk_start)
+            return recordings.cut_plan(chunk_start, chunk_end, originals, recordings.narration_spans(spans))
+
+        spans = hear()
+        pieces = cut(spans)
+        for label in ("Second", "Third"):
+            try:
+                spans = recordings.fill_gaps(spans, hear())
+            except Exception as exc:  # noqa: BLE001 - an extra pass is an improvement, never a chunk failure
+                traceback.print_exc()
+                self._warn(job_id, f"{label} diarizer pass failed on chunk {chunk_index}: {str(exc)[:200]}")
+                break
+            pieces = cut(spans)
+            # The cut is in absolute source ms; coverage is measured against the chunk-relative spans.
+            relative = [(start - chunk_start, end - chunk_start, kind) for start, end, kind in pieces]
+            if recordings.narrator_coverage(spans, relative) >= recordings.COVERAGE_MIN:
+                break
+        return spans, pieces
+
     def _create_segments(
         self,
         job_id: str,
@@ -257,15 +297,9 @@ class Pipeline:
             pieces: list[recordings.Piece] = [(chunk_start, chunk_end, "narration")]
             if reference is not None:
                 try:
-                    spans = self._tracked_call(
-                        job_id, None, "diarization", model, str(chunk_path),
-                        lambda: ai.diarize(chunk_path, model, reference),
+                    spans, pieces = self._diarize_chunk(
+                        job_id, ai, model, chunk_index, chunk_start, chunk_end, chunk_path, reference,
                     )
-                    # The chunk file starts CHUNK_PAD_MS before the planned chunk; diarizer times are file-relative.
-                    lead_s = self.audio.chunk_lead_ms(chunk_start) / 1000
-                    spans = [dict(item, start=float(item["start"]) - lead_s, end=float(item["end"]) - lead_s) for item in spans]
-                    originals = recordings.original_spans(spans, chunk_end - chunk_start)
-                    pieces = recordings.cut_plan(chunk_start, chunk_end, originals, recordings.narration_spans(spans))
                 except Exception as exc:  # noqa: BLE001 - one chunk's detection must not fail the job
                     traceback.print_exc()
                     self._warn(job_id, f"Recording detection failed on chunk {chunk_index}: {str(exc)[:200]}")

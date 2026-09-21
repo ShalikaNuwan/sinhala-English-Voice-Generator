@@ -26,6 +26,11 @@ PAD_MS = 150
 # A narrator-labelled span inside a recording is a mislabelled aside only if it is this short;
 # anything longer is the narrator talking (the diarizer sometimes writes Sinhala in Latin letters).
 MAX_ASIDE_MS = 2000
+# A later diarizer pass fills a hole in the first pass only when the hole is at least this long.
+FILL_MIN_MS = 300
+# Below this much of the narration heard as narrator speech, the reading is thin: another pass, and
+# capped breaks on what comes out of it.
+COVERAGE_MIN = 0.85
 
 Piece = tuple[int, int, str]
 
@@ -76,6 +81,47 @@ def narration_spans(spans: list[dict]) -> list[tuple[int, int]]:
         for item in spans
         if is_narrator_speech(item)
     )
+
+
+def _uncovered(start: int, end: int, covered: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """The parts of a span that no covering range touches, in order. `covered` is sorted by start."""
+    free: list[tuple[int, int]] = []
+    cursor = start
+    for begin, finish in covered:
+        if begin >= end:
+            break
+        if finish <= cursor:
+            continue
+        if begin > cursor:
+            free.append((cursor, begin))
+        cursor = finish
+        if cursor >= end:
+            return free
+    if cursor < end:
+        free.append((cursor, end))
+    return free
+
+
+def fill_gaps(primary: list[dict], secondary: list[dict]) -> list[dict]:
+    """The first diarizer pass plus the narrator stretches only a later pass heard.
+
+    One call drops spans another returns, and a dropped span becomes a false long break. The first
+    pass stays the base: its spans come back untouched, and a later pass contributes only where the
+    first heard nobody at all, trimmed to that hole and dropped when the hole is too short to matter.
+    """
+    covered = sorted((_ms(item["start"]), max(_ms(item["start"]), _ms(item["end"]))) for item in primary)
+    merged = list(primary)
+    for item in secondary:
+        if not is_narrator_speech(item):
+            continue
+        start, end = _ms(item["start"]), max(_ms(item["start"]), _ms(item["end"]))
+        for hole_start, hole_end in _uncovered(start, end, covered):
+            if hole_end - hole_start >= FILL_MIN_MS:
+                merged.append({
+                    "speaker": NARRATOR, "start": hole_start / 1000, "end": hole_end / 1000,
+                    "text": (item.get("text") or "").strip(), "filled": True,
+                })
+    return sorted(merged, key=lambda item: float(item["start"]))
 
 
 def original_spans(spans: list[dict], chunk_ms: int) -> list[tuple[int, int]]:
@@ -160,6 +206,29 @@ def cut_plan(
             continue
         merged.append([start, end, kind])
     return [(chunk_start_ms + s, chunk_start_ms + e, k) for s, e, k in merged]
+
+
+def narrator_coverage(spans: list[dict], pieces: list[Piece]) -> float:
+    """How much of the narration pieces the narrator is heard over, 0 to 1.
+
+    Both arguments are chunk-relative: `spans` in seconds as the diarizer returns them, `pieces` in
+    ms. Spans are clamped to each piece and an overlap is counted once. A chunk that is all
+    recording has nothing to cover, so it counts as covered.
+    """
+    narration = [(start, end) for start, end, kind in pieces if kind == "narration"]
+    total = sum(max(0, end - start) for start, end in narration)
+    if total <= 0:
+        return 1.0
+    heard = narration_spans(spans)
+    inside = 0
+    for piece_start, piece_end in narration:
+        reached = piece_start
+        for start, end in heard:
+            begin, finish = max(piece_start, start, reached), min(piece_end, end)
+            if finish > begin:
+                inside += finish - begin
+                reached = finish
+    return inside / total
 
 
 def clip_text(spans: list[dict], start_ms: int, end_ms: int) -> str:

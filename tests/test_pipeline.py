@@ -1275,3 +1275,82 @@ def test_regenerating_the_adaptation_uses_the_stored_phrases(tmp_path):
     fresh = db.one("SELECT * FROM segments WHERE id=?", (first["id"],))
     assert ai.adapt_calls[-1]["runs"] == ai.adapt_calls[0]["runs"]
     assert [line["break_s"] for line in fresh["lines"]] == [0.6, 0.4, 0.6]
+
+
+class GappyFakeAI(ProfilingFakeAI):
+    """The first pass over chunk 1 never hears the middle phrase; every later pass does, overlapping its neighbours."""
+
+    def diarize(self, audio_path, model, reference=None):
+        self.diarize_calls.append({"path": Path(audio_path), "reference": reference})
+        if reference is None:
+            return [{"speaker": "A", "start": 0.0, "end": 9.0, "text": SINHALA}]
+        if Path(audio_path).name != "0001_source.wav":
+            return [{"speaker": "narrator", "start": 0.2, "end": 20.2, "text": "E " + SINHALA}]
+        heard = [
+            {"speaker": "narrator", "start": 0.0, "end": 8.0, "text": "A " + SINHALA},
+            {"speaker": "narrator", "start": 30.0, "end": 44.7, "text": "D " + SINHALA},
+        ]
+        if len([call for call in self.diarize_calls if call["path"].name == "0001_source.wav"]) > 1:
+            heard.insert(1, {"speaker": "narrator", "start": 7.5, "end": 28.8, "text": "C " + SINHALA})
+        return heard
+
+
+class FlakyPassFakeAI(PhrasedFakeAI):
+    """The first pass over a chunk works; every extra pass over it raises."""
+
+    def diarize(self, audio_path, model, reference=None):
+        seen = [call for call in self.diarize_calls if call["path"] == Path(audio_path) and call["reference"] is not None]
+        if reference is not None and seen:
+            self.diarize_calls.append({"path": Path(audio_path), "reference": reference})
+            raise RuntimeError("diarizer busy")
+        return super().diarize(audio_path, model, reference)
+
+
+def chunk_passes(ai) -> list[str]:
+    return [call["path"].name for call in ai.diarize_calls if call["reference"] is not None]
+
+
+def test_a_second_diarizer_pass_fills_the_stretch_the_first_one_missed(tmp_path):
+    ai = GappyFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai, seconds=65)
+    job_id = start_job(db, project_id)
+
+    pipeline.process_job(job_id)
+
+    first = db.one("SELECT * FROM segments WHERE job_id=? AND segment_index=1", (job_id,))
+    # The filled span is trimmed to what the first pass never heard: it starts where phrase A ended.
+    assert first["phrases"] == [
+        {"start_ms": 0, "end_ms": 8000, "text": "A " + SINHALA},
+        {"start_ms": 8000, "end_ms": 28800, "text": "C " + SINHALA},
+        {"start_ms": 30000, "end_ms": 44700, "text": "D " + SINHALA},
+    ]
+    # Without the fill the 22 s hole would read as a false 3.0 s pause after the first line.
+    assert [line["gap_after_ms"] for line in first["lines"]] == [1200, 300]
+    assert [line["break_s"] for line in first["lines"]] == [1.2, 0.4]
+    assert chunk_passes(ai) == ["0001_source.wav"] * 2 + ["0002_source.wav"] * 2
+
+
+def test_a_third_pass_runs_while_the_narrator_stays_thinly_covered(tmp_path):
+    # ProfilingFakeAI hears only 3 s of every chunk, so no pass brings the coverage up.
+    ai = ProfilingFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai, seconds=65)
+
+    pipeline.process_job(start_job(db, project_id))
+
+    assert chunk_passes(ai) == ["0001_source.wav"] * 3 + ["0002_source.wav"] * 3
+
+
+def test_a_failing_extra_pass_warns_and_keeps_the_first_passs_phrases(tmp_path):
+    ai = FlakyPassFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai, seconds=65)
+    job_id = start_job(db, project_id)
+
+    pipeline.process_job(job_id)
+
+    first = db.one("SELECT * FROM segments WHERE job_id=? AND segment_index=1", (job_id,))
+    assert [phrase["text"] for phrase in first["phrases"]] == [f"{letter} {SINHALA}" for letter in "ABCD"]
+    assert [line["break_s"] for line in first["lines"]] == [0.6, 0.4, 0.6]
+    warnings = db.one("SELECT * FROM jobs WHERE id=?", (job_id,))["warnings"] or []
+    assert any("Second diarizer pass failed on chunk 1: diarizer busy" in warning for warning in warnings)
+    assert not any("Third diarizer pass" in warning for warning in warnings)
+    assert db.one("SELECT status FROM jobs WHERE id=?", (job_id,))["status"] == "awaiting_review"
