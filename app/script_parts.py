@@ -81,14 +81,17 @@ def index_lines(pieces: list[dict]) -> list[str]:
              "Voice each narration file on its own (ElevenLabs Multilingual v2 reads the break marks), then place",
              "the recording files between the voiced parts. Target is the length of the original passage; a mark at",
              "the end of a narration file is the narrator's pause before the recording that follows it.", ""]
+    previous_end: int | None = None
     for piece in pieces:
         span = f"{piece['start_ms'] / 1000:.1f}-{piece['end_ms'] / 1000:.1f} s"
         duration = (piece["end_ms"] - piece["start_ms"]) / 1000
+        lead = "" if previous_end is None or piece["start_ms"] - previous_end < 300 else f", starts {(piece['start_ms'] - previous_end) / 1000:.1f} s after the previous file"
+        previous_end = piece["end_ms"]
         if piece["kind"] == "recording":
             lines.append(f"- `{file_name(piece)}`: kept recording, segment {piece['segment_index']}, source {span}, duration {duration:.1f} s")
         else:
             segs = ", ".join(str(index) for index in piece["segments"])
             chars = len(render(piece))
             marks = sum(1 for line in piece["lines"] if line.get("break_s"))
-            lines.append(f"- `{file_name(piece)}`: narration, segments {segs}, source {span}, target {duration:.1f} s, {chars} characters, {marks} break mark{'s' if marks != 1 else ''}")
+            lines.append(f"- `{file_name(piece)}`: narration, segments {segs}, source {span}, target {duration:.1f} s, {chars} characters, {marks} break mark{'s' if marks != 1 else ''}{lead}")
     return lines

@@ -81,3 +81,17 @@ def test_the_programme_s_last_line_carries_no_mark():
     pieces = script_parts.expand(script_parts.plan_parts([seg(1, lines=[line("A.", 0.6, 0, 1), line("B.", 0.5, 2, 3)])]))
 
     assert script_parts.render(pieces[-1]) == 'A. <break time="0.6s" />\nB.\n'
+
+
+def test_render_flattens_paragraph_breaks_inside_a_line():
+    piece = {"kind": "narration", "lines": [line("One.\n\nTwo.", 0.5, 0, 1)]}
+    assert script_parts.render(piece) == 'One. Two. <break time="0.5s" />\n'
+
+
+def test_index_notes_silence_before_narration_that_resumes_late():
+    parts = script_parts.plan_parts([
+        seg(1, kind="original", audio="/a/x.wav", start=0, end=10000),
+        seg(2, lines=[line("Back.", None, 15000, 16000)]),
+    ])
+    lines = script_parts.index_lines(script_parts.expand(parts))
+    assert lines[-1].endswith("0 break marks, starts 5.0 s after the previous file")

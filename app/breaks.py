@@ -113,7 +113,7 @@ def render(lines: list[dict]) -> str:
     """Script text with a mark after every line that has a break."""
     parts = []
     for line in lines:
-        text = line["text"].strip().replace("<", "").replace(">", "")
+        text = " ".join(line["text"].replace("<", "").replace(">", "").split())
         parts.append(f"{text} {mark(line['break_s'])}\n" if line.get("break_s") else f"{text}\n")
     return "".join(parts)
 
