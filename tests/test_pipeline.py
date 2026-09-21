@@ -13,7 +13,15 @@ from app.pipeline import Pipeline
 from app.schemas import FaithfulTranslation, NarrationAdaptation, QAEvaluation
 
 
+SINHALA = "ඇය කියනවා කවුරුහරි එනවා කියලා."
+SINHALA_TEST = "මෙය පරීක්ෂණයකි."
+CALL = "Hello? Do you need the police?"
+
+
 class FakeAI:
+    def __init__(self):
+        self.turn_calls: list[dict] = []
+
     def transcribe(self, *_args, **_kwargs):
         return "මෙය පරීක්ෂණයකි."
 
@@ -35,6 +43,15 @@ class FakeAI:
         # The sample has one speaker; chunks are narrator-only unless a subclass says otherwise.
         speaker = "narrator" if reference else "A"
         return [{"speaker": speaker, "start": 0.0, "end": 3.0, "text": "මෙය පරීක්ෂණයකි."}]
+
+    def speech_turns(self, pcm_path, duration_ms, threshold, silence_ms, model):
+        self.turn_calls.append({"path": Path(pcm_path), "duration_ms": duration_ms, "threshold": threshold,
+                                "silence_ms": silence_ms, "model": model, "existed": Path(pcm_path).exists()})
+        return self.turns_for(Path(pcm_path).name, duration_ms)
+
+    def turns_for(self, _name: str, duration_ms: int) -> list[dict]:
+        """What the voice detection hears in a file: one turn, end to end, unless a subclass says otherwise."""
+        return [{"start_ms": 0, "end_ms": duration_ms, "text": SINHALA_TEST}]
 
     def synthesize(self, _text, _model, _voice, _style, output_path: Path, profile=None,
                    previous_style=None, persona=None, speed=1.0, previous_text=None):
@@ -124,6 +141,7 @@ class ProfilingFakeAI(FakeAI):
     """Fake that records how it was called, so profile plumbing can be asserted."""
 
     def __init__(self, describe_error: Exception | None = None):
+        super().__init__()
         self.describe_calls = 0
         self.describe_error = describe_error
         self.synthesis_profiles: list[dict | None] = []
@@ -160,11 +178,6 @@ class ProfilingFakeAI(FakeAI):
         super().synthesize(text, model, voice, style, output_path, profile, previous_style, persona, speed)
 
 
-SINHALA = "ඇය කියනවා කවුරුහරි එනවා කියලා."
-SINHALA_TEST = "මෙය පරීක්ෂණයකි."
-CALL = "Hello? Do you need the police?"
-
-
 class RecordingFakeAI(ProfilingFakeAI):
     """First chunk has a 911 call from 20 s to 30 s; later chunks are narrator only."""
 
@@ -189,6 +202,13 @@ class RecordingFakeAI(ProfilingFakeAI):
                 {"speaker": "narrator", "start": 30.0, "end": 45.0, "text": SINHALA},
             ]
         return [{"speaker": "narrator", "start": 0.2, "end": 20.2, "text": SINHALA}]
+
+
+    def turns_for(self, name: str, duration_ms: int) -> list[dict]:
+        # Chunk 2's own file begins 200 ms before 45 s, where the narrator is already silent.
+        if name == "0002_source.pcm":
+            return [{"start_ms": 200, "end_ms": 20_200, "text": SINHALA}]
+        return [{"start_ms": 0, "end_ms": duration_ms, "text": SINHALA}]
 
 
 class BoundaryFakeAI(RecordingFakeAI):
@@ -225,6 +245,17 @@ class PhrasedFakeAI(ProfilingFakeAI):
                 {"speaker": "narrator", "start": 30.3, "end": 44.7, "text": "D " + SINHALA},
             ]
         return [{"speaker": "narrator", "start": 0.5, "end": 20.2, "text": "E " + SINHALA}]
+
+
+    def turns_for(self, name: str, duration_ms: int) -> list[dict]:
+        if name == "0001_source.pcm":
+            return [
+                {"start_ms": 0, "end_ms": 8000, "text": "A " + SINHALA},
+                {"start_ms": 8100, "end_ms": 15_000, "text": "B " + SINHALA},
+                {"start_ms": 15_600, "end_ms": 30_000, "text": "C " + SINHALA},
+                {"start_ms": 30_300, "end_ms": 44_700, "text": "D " + SINHALA},
+            ]
+        return [{"start_ms": 500, "end_ms": 20_200, "text": "E " + SINHALA}]
 
 
 class MisalignedFakeAI(PhrasedFakeAI):
@@ -284,7 +315,8 @@ def build_project(tmp_path, ai, seconds: float = 1.0, narrator_profile: dict | N
     return pipeline, db, project_id
 
 
-def start_job(db, project_id, detect_recordings: bool = True, shape_pauses: bool = True, voice_stage: bool = True):
+def start_job(db, project_id, detect_recordings: bool = True, shape_pauses: bool = True, voice_stage: bool = True,
+              pause_source: str = "realtime"):
     job_id = str(uuid.uuid4())
     job_config = {
         "stt_model": "fake-stt", "text_model": "fake-text", "qa_model": "fake-qa",
@@ -292,6 +324,7 @@ def start_job(db, project_id, detect_recordings: bool = True, shape_pauses: bool
         "speed": 0.95,
         "diarize_model": "fake-diarize", "detect_recordings": detect_recordings,
         "align_model": "fake-align", "shape_pauses": shape_pauses, "voice_stage": voice_stage,
+        "pause_source": pause_source, "turn_transcribe_model": "fake-turns",
         "human_review_gate": True,
     }
     db.execute(
@@ -578,7 +611,8 @@ def test_detection_failure_on_a_chunk_keeps_it_as_narration_with_a_warning(tmp_p
     assert [s["kind"] for s in segments] == ["narration", "narration"]
     warnings = db.one("SELECT * FROM jobs WHERE id=?", (job_id,))["warnings"]
     assert any("Recording detection failed on chunk 1" in w for w in warnings)
-    assert any("No spoken phrases for segment 1" in w for w in warnings)
+    # The pause map is heard from the piece's own audio, so the breaks survive a failed diarization.
+    assert segments[0]["phrases"] and not any("No spoken phrases for segment 1" in w for w in warnings)
     assert db.one("SELECT status FROM jobs WHERE id=?", (job_id,))["status"] == "awaiting_review"
 
 
@@ -1250,10 +1284,10 @@ def test_a_segment_without_phrases_adapts_as_a_passage_with_a_warning(tmp_path):
     assert ai.adapt_calls[0]["runs"] == [SINHALA_TEST]
 
 
-def test_detection_off_means_no_phrases_no_runs_and_no_warning_about_them(tmp_path):
+def test_detection_off_with_the_diarizer_source_means_no_phrases_and_no_warning_about_them(tmp_path):
     ai = ProfilingFakeAI()
     pipeline, db, project_id = build_project(tmp_path, ai)
-    job_id = start_job(db, project_id, detect_recordings=False)
+    job_id = start_job(db, project_id, detect_recordings=False, pause_source="diarizer")
 
     pipeline.process_job(job_id)
 
@@ -1275,6 +1309,105 @@ def test_regenerating_the_adaptation_uses_the_stored_phrases(tmp_path):
     fresh = db.one("SELECT * FROM segments WHERE id=?", (first["id"],))
     assert ai.adapt_calls[-1]["runs"] == ai.adapt_calls[0]["runs"]
     assert [line["break_s"] for line in fresh["lines"]] == [0.6, 0.4, 0.6]
+
+
+class VadFakeAI(RecordingFakeAI):
+    """Voice detection that hears two turns in every file, 600 ms apart, where the diarizer heard one."""
+
+    def turns_for(self, name: str, duration_ms: int) -> list[dict]:
+        if name == "0002_source.pcm":
+            return [
+                {"start_ms": 200, "end_ms": 5000, "text": "E " + SINHALA},
+                {"start_ms": 5600, "end_ms": 20_200, "text": "F " + SINHALA},
+            ]
+        return [
+            {"start_ms": 0, "end_ms": 4000, "text": "A " + SINHALA},
+            {"start_ms": 4600, "end_ms": duration_ms, "text": "B " + SINHALA},
+        ]
+
+
+class DeafFakeAI(PhrasedFakeAI):
+    """The Realtime session is unavailable, so the diarizer's narrator spans have to carry the breaks."""
+
+    def speech_turns(self, *_args, **_kwargs):
+        raise RuntimeError("realtime unavailable")
+
+
+class UntranscribedFakeAI(PhrasedFakeAI):
+    """Voice detection that timed every turn but transcribed none of them."""
+
+    def turns_for(self, name: str, duration_ms: int) -> list[dict]:
+        return [dict(turn, text="") for turn in super().turns_for(name, duration_ms)]
+
+
+def test_the_pause_map_is_heard_from_each_pieces_own_audio(tmp_path):
+    pipeline, db, project_id, job_id, ai, segments = run_recording_job(tmp_path, VadFakeAI())
+
+    # Segment 1 is cut as its own piece file, which starts exactly where the piece starts.
+    assert segments[0]["phrases"] == [
+        {"start_ms": 0, "end_ms": 4000, "text": "A " + SINHALA},
+        {"start_ms": 4600, "end_ms": 19_850, "text": "B " + SINHALA},
+    ]
+    # Segment 4 is the whole of chunk 2, whose file begins 200 ms before the chunk does.
+    assert segments[3]["phrases"] == [
+        {"start_ms": 45_000, "end_ms": 49_800, "text": "E " + SINHALA},
+        {"start_ms": 50_400, "end_ms": 65_000, "text": "F " + SINHALA},
+    ]
+    # The 600 ms the detection heard becomes the break; the last run runs up to the recorded voice.
+    assert [line["gap_after_ms"] for line in segments[0]["lines"]] == [600, 150]
+    assert [call["path"].name for call in ai.turn_calls] == ["0001_piece.pcm", "0003_piece.pcm", "0002_source.pcm"]
+    assert {(call["threshold"], call["silence_ms"], call["model"]) for call in ai.turn_calls} == {(0.8, 200, "fake-turns")}
+    assert len(db.all("SELECT id FROM model_calls WHERE job_id=? AND stage='pause_map'", (job_id,))) == 3
+
+
+def test_the_pcm_copy_is_deleted_once_the_session_is_over(tmp_path):
+    pipeline, db, project_id, job_id, ai, segments = run_recording_job(tmp_path, VadFakeAI())
+
+    assert all(call["existed"] for call in ai.turn_calls)  # the session did get the audio
+    assert list(Path(segments[0]["source_audio_path"]).parent.glob("*.pcm")) == []
+
+
+def test_a_failed_pause_map_warns_and_falls_back_to_the_diarizers_phrases(tmp_path):
+    ai = DeafFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai, seconds=65)
+    job_id = start_job(db, project_id)
+
+    pipeline.process_job(job_id)
+
+    first = db.one("SELECT * FROM segments WHERE job_id=? AND segment_index=1", (job_id,))
+    assert [phrase["text"] for phrase in first["phrases"]] == [f"{letter} {SINHALA}" for letter in "ABCD"]
+    assert [line["break_s"] for line in first["lines"]] == [0.6, 0.4, 0.6]
+    warnings = db.one("SELECT * FROM jobs WHERE id=?", (job_id,))["warnings"]
+    assert any("Pause map unavailable for segment 1: realtime unavailable" in warning for warning in warnings)
+    assert db.one("SELECT status FROM jobs WHERE id=?", (job_id,))["status"] == "awaiting_review"
+    assert db.one("SELECT status FROM model_calls WHERE job_id=? AND stage='pause_map'", (job_id,))["status"] == "failed"
+
+
+def test_the_diarizer_source_keeps_the_old_phrases_and_opens_no_session(tmp_path):
+    ai = PhrasedFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai, seconds=65)
+    job_id = start_job(db, project_id, pause_source="diarizer")
+
+    pipeline.process_job(job_id)
+
+    first = db.one("SELECT * FROM segments WHERE job_id=? AND segment_index=1", (job_id,))
+    assert ai.turn_calls == []
+    assert [phrase["text"] for phrase in first["phrases"]] == [f"{letter} {SINHALA}" for letter in "ABCD"]
+    assert not db.all("SELECT id FROM model_calls WHERE job_id=? AND stage='pause_map'", (job_id,))
+
+
+def test_turns_nobody_transcribed_keep_the_pause_map_under_a_placeholder(tmp_path):
+    ai = UntranscribedFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai, seconds=65)
+    job_id = start_job(db, project_id)
+
+    pipeline.process_job(job_id)
+
+    first = db.one("SELECT * FROM segments WHERE job_id=? AND segment_index=1", (job_id,))
+    assert [phrase["text"] for phrase in first["phrases"]] == ["(speech)"] * 4
+    # The silences are the narrator's own even with nothing transcribed, so the runs survive.
+    assert ai.adapt_calls[0]["runs"] == ["(speech) (speech)", "(speech)", "(speech)"]
+    assert [line["break_s"] for line in first["lines"]] == [0.6, 0.4, 0.6]
 
 
 class GappyFakeAI(ProfilingFakeAI):
@@ -1321,6 +1454,15 @@ class SparseFakeAI(ProfilingFakeAI):
         ]
 
 
+    def turns_for(self, name: str, duration_ms: int) -> list[dict]:
+        if name == "0001_source.pcm":
+            return [
+                {"start_ms": 0, "end_ms": 4000, "text": "A " + SINHALA},
+                {"start_ms": 40_000, "end_ms": 44_000, "text": "D " + SINHALA},
+            ]
+        return [{"start_ms": 200, "end_ms": 20_200, "text": "E " + SINHALA}]
+
+
 def chunk_passes(ai) -> list[str]:
     return [call["path"].name for call in ai.diarize_calls if call["reference"] is not None]
 
@@ -1328,7 +1470,7 @@ def chunk_passes(ai) -> list[str]:
 def test_a_second_diarizer_pass_fills_the_stretch_the_first_one_missed(tmp_path):
     ai = GappyFakeAI()
     pipeline, db, project_id = build_project(tmp_path, ai, seconds=65)
-    job_id = start_job(db, project_id)
+    job_id = start_job(db, project_id, pause_source="diarizer")
 
     pipeline.process_job(job_id)
 

@@ -67,6 +67,10 @@ All model names are environment variables so deployment is not tied to a changin
 | `DIARIZE_MODEL` | `gpt-4o-transcribe-diarize` |
 | `DETECT_RECORDINGS` | `1` |
 | `ALIGN_MODEL` | `whisper-1` |
+| `PAUSE_SOURCE` | `realtime` |
+| `REALTIME_VAD_THRESHOLD` | `0.8` |
+| `REALTIME_VAD_SILENCE_MS` | `200` |
+| `TURN_TRANSCRIBE_MODEL` | `gpt-4o-transcribe` |
 | `SHAPE_PAUSES` | `1` |
 | `MASTER_VOICE` | `1` |
 | `TTS_PROVIDER` | `openai` |
@@ -247,21 +251,29 @@ Tick "Text only (voice elsewhere)" before starting processing (or send `voice_st
 nothing is voiced and no voice credit is spent. Review the scripts as usual, then click "Export
 script parts" (`POST /api/projects/{id}/export/parts`, or `scripts/export_script_parts.py`).
 
-The breaks in the exported script are the narrator's own. The diarizer hears the Sinhala as phrases
-with times; phrases that run on with under 150 ms between them are one flowing run, and a real
-pause ends a run. The adaptation writes the English as one line per run, in order (merging two runs
-only when English grammar forces it), so every line has a measured silence after it. That silence is
-written after the line as `<break time="0.8s" />`, which ElevenLabs Multilingual v2 honours (v3 does
-not read break tags). A line that ends a sentence gets at least 400 ms; nothing exceeds 3.0 s; a
-gap under 300 ms writes no mark. The table lives at the top of `app/breaks.py`. When a segment's
-lines do not cover its runs, QA sends it to review with "Script lines do not follow the spoken
-runs". Segments without phrase data (detection off, or older jobs) export their paragraphs with
-default breaks of 0.9 s between paragraphs and 0.5 s at the end.
+The breaks in the exported script are the narrator's own. The pause map comes from OpenAI's Realtime
+API: a transcription session with server voice detection reports every moment the narrator starts
+and stops speaking, in milliseconds, and transcribes each turn, and the same audio gives the same
+boundaries on every call, which the diarizer's spans do not. The diarizer now only finds the
+narrator and the kept recordings. `PAUSE_SOURCE=diarizer` goes back to taking the phrases from its
+narrator spans, which is also the automatic fallback, with the warning "Pause map unavailable for
+segment N: …", when a session fails; `REALTIME_VAD_THRESHOLD` (0.8) sets how readily speech is heard
+and `REALTIME_VAD_SILENCE_MS` (200) how much silence ends a turn.
 
-Every chunk is diarized twice, because one call drops spans another returns and a dropped span reads
-as a long pause the narrator never took; the second pass fills only the stretches of at least 300 ms
-the first never heard, and a third pass runs when the narrator still covers under 85 percent of the
-chunk's narration. Silence nobody was heard over is a hole, not a measurement: when a segment's
+Phrases that run on with under 150 ms between them are one flowing run, and a real pause ends a run.
+The adaptation writes the English as one line per run, in order (merging two runs only when English
+grammar forces it), so every line has a measured silence after it. That silence is written after the
+line as `<break time="0.8s" />`, which ElevenLabs Multilingual v2 honours (v3 does not read break
+tags). A line that ends a sentence gets at least 400 ms; nothing exceeds 3.0 s; a gap under 300 ms
+writes no mark. The table lives at the top of `app/breaks.py`. When a segment's lines do not cover
+its runs, QA sends it to review with "Script lines do not follow the spoken runs". Segments without
+phrase data (nothing heard, or older jobs) export their paragraphs with default breaks of 0.9 s
+between paragraphs and 0.5 s at the end.
+
+Every chunk is diarized twice, because one call drops spans another returns, which moves the piece
+boundaries and, under `PAUSE_SOURCE=diarizer`, reads as a long pause the narrator never took; the
+second pass fills only the stretches of at least 300 ms the first never heard, and a third pass runs
+when the narrator still covers under 85 percent of the chunk's narration. Silence nobody was heard over is a hole, not a measurement: when a segment's
 phrases cover under 85 percent of it, every break over 1.0 s is capped at 1.0 s and the job carries
 "Phrases cover N% of segment K; breaks over 1.0 s capped", and `index.md` marks that part with
 "coverage NN% (check breaks by ear)" so you know which one to check.

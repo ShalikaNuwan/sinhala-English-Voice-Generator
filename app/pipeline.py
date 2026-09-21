@@ -20,6 +20,8 @@ from .schemas import QAEvaluation
 T = TypeVar("T")
 
 CONFIRM_NOTE = "Recorded audio kept as is. Confirm."
+# Stands in for a turn the voice detection timed but the transcription returned empty.
+SPEECH_NOTE = "(speech)"
 ENGLISH_NOTE = "Possible recorded audio (English speech in transcript). Mark as original if so."
 DURATION_RANGE = (0.55, 1.45)
 
@@ -283,6 +285,45 @@ class Pipeline:
                 break
         return spans, pieces
 
+    def _pause_map(
+        self, job_id: str, ai: AIClient, config: dict, index: int,
+        source_path: Path, offset_ms: int, start_ms: int, end_ms: int,
+    ) -> list[dict] | None:
+        """A narration piece's phrases as the Realtime voice detection heard them, or None on failure.
+
+        The session hears the piece's own audio, so its turn times are file-relative; `offset_ms`
+        puts them back in source time. The PCM copy exists only for the length of the session.
+        """
+        model = config.get("turn_transcribe_model", self.config.turn_transcribe_model)
+        threshold = config.get("realtime_vad_threshold", self.config.realtime_vad_threshold)
+        silence_ms = config.get("realtime_vad_silence_ms", self.config.realtime_vad_silence_ms)
+        pcm = source_path.with_suffix(".pcm")
+        try:
+            duration_ms = self.audio.to_pcm(source_path, pcm)
+            heard = self._tracked_call(
+                job_id, None, "pause_map", model, str(source_path),
+                lambda: ai.speech_turns(pcm, duration_ms, threshold, silence_ms, model),
+            )
+        except Exception as exc:  # noqa: BLE001 - the diarizer's narrator spans remain the fallback
+            traceback.print_exc()
+            self._warn(job_id, f"Pause map unavailable for segment {index}: {str(exc)[:200]}")
+            return None
+        finally:
+            pcm.unlink(missing_ok=True)
+        phrases = [
+            {
+                "start_ms": max(start_ms, offset_ms + turn["start_ms"]),
+                "end_ms": min(end_ms, offset_ms + turn["end_ms"]),
+                "text": (turn.get("text") or "").strip(),
+            }
+            for turn in heard
+            if offset_ms + turn["end_ms"] > start_ms and offset_ms + turn["start_ms"] < end_ms
+        ]
+        if phrases and not any(phrase["text"] for phrase in phrases):
+            # Nothing came back transcribed, but the silences are measured all the same: keep the map.
+            phrases = [dict(phrase, text=SPEECH_NOTE) for phrase in phrases]
+        return phrases
+
     def _create_segments(
         self,
         job_id: str,
@@ -295,7 +336,9 @@ class Pipeline:
         """One row per piece: narration to be voiced, or a recording kept from the source."""
         self.db.execute("DELETE FROM segments WHERE job_id=?", (job_id,))
         model = config.get("diarize_model", self.config.diarize_model)
-        ai = self._ai() if reference is not None else None
+        pause_source = config.get("pause_source", self.config.pause_source)
+        # Detection needs the narrator reference; the pause map only needs the audio.
+        ai = self._ai() if reference is not None or pause_source == "realtime" else None
         generated = self._generated_dir(project["id"], job_id)
         segment_ids: list[str] = []
         index = 0
@@ -342,6 +385,12 @@ class Pipeline:
                     and chunk_start + round(float(item["end"]) * 1000) > start_ms
                     and chunk_start + round(float(item["start"]) * 1000) < end_ms
                 ]
+                if pause_source == "realtime":
+                    # A piece file starts at the piece; the chunk file starts a lead before its chunk.
+                    offset = start_ms if source_path != chunk_path else chunk_start - self.audio.chunk_lead_ms(chunk_start)
+                    heard = self._pause_map(job_id, ai, config, index, source_path, offset, start_ms, end_ms)
+                    if heard is not None:
+                        phrases = heard
                 self.db.execute(
                     "INSERT INTO segments(id, job_id, project_id, segment_index, start_ms, end_ms, source_audio_path, kind, phrases_json, updated_at) "
                     "VALUES(?,?,?,?,?,?,?,?,?,?)",
