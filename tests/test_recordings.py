@@ -275,3 +275,15 @@ def test_narrator_coverage_does_not_count_an_overlap_twice():
     assert recordings.narrator_coverage(spans, pieces) == 0.9
     assert recordings.narrator_coverage([], pieces) == 0.0
     assert recordings.narrator_coverage(spans, [(0, 10000, "original")]) == 1.0
+
+
+def test_a_filled_span_never_splits_a_recording_or_enters_its_transcript():
+    spans = [
+        {"speaker": "A", "start": 10.0, "end": 14.0, "text": "Hello?"},
+        {"speaker": "narrator", "start": 15.0, "end": 16.0, "text": "Mistaken fill", "filled": True},
+        {"speaker": "A", "start": 17.0, "end": 20.0, "text": "Do you need the police?"},
+        {"speaker": "narrator", "start": 20.0, "end": 30.0, "text": "සිංහල"},
+    ]
+
+    assert recordings.original_spans(spans, 30000) == [(10000 - recordings.PAD_MS, 20000 + recordings.PAD_MS)]
+    assert recordings.clip_text(spans, 9850, 20150) == "Hello? Do you need the police?"

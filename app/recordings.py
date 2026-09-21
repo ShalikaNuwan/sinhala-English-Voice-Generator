@@ -142,6 +142,9 @@ def original_spans(spans: list[dict], chunk_ms: int) -> list[tuple[int, int]]:
         current = None
 
     for item in sorted(spans, key=lambda item: float(item["start"])):
+        if item.get("filled"):
+            # A stretch only a later pass heard fills narration holes; it never opens or closes a recording.
+            continue
         start, end = _ms(item["start"]), _ms(item["end"])
         end = max(start, end)
         labelled_narrator = item.get("speaker") == NARRATOR
@@ -237,7 +240,7 @@ def clip_text(spans: list[dict], start_ms: int, end_ms: int) -> str:
     for item in sorted(spans, key=lambda item: float(item["start"])):
         inside = _ms(item["end"]) > start_ms and _ms(item["start"]) < end_ms
         text = (item.get("text") or "").strip()
-        if inside and text and not has_foreign_script(text):
+        if inside and text and not has_foreign_script(text) and not item.get("filled"):
             parts.append(text)
     return " ".join(parts)
 
