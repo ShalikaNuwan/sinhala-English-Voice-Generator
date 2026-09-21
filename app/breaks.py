@@ -16,6 +16,8 @@ FLOW_GAP_MS = 150
 SENTENCE_MIN_MS = 400
 # ElevenLabs' ceiling for one break tag.
 BREAK_MAX_MS = 3000
+# ElevenLabs v2 already pauses about this long at a comma; a smaller mark only spends the tag budget.
+MIN_MARK_MS = 300
 # For segments without phrase data.
 DEFAULT_SENTENCE_MS = 500
 DEFAULT_PARAGRAPH_MS = 900
@@ -51,10 +53,11 @@ def ends_sentence(text: str) -> bool:
 
 def break_seconds(gap_ms: int, line_text: str) -> float | None:
     """The break to write after a line, from the measured silence; None when punctuation is enough."""
-    if gap_ms < FLOW_GAP_MS:
-        return None
     if ends_sentence(line_text):
         gap_ms = max(gap_ms, SENTENCE_MIN_MS)
+    if gap_ms < MIN_MARK_MS:
+        return None
+    # Python rounds half to even on exact quarter-seconds (250 ms -> 0.2); the 50 ms is inaudible.
     return round(min(gap_ms, BREAK_MAX_MS) / 1000, 1)
 
 
@@ -64,6 +67,8 @@ def mark(seconds: float) -> str:
 
 def covers_runs(lines: list[dict], run_count: int) -> bool:
     """Every run rendered exactly once, in order."""
+    if any(not line.get("runs") for line in lines):
+        return False
     used = [number for line in lines for number in line.get("runs", [])]
     return used == list(range(1, run_count + 1))
 
@@ -73,6 +78,7 @@ def attach_breaks(lines: list[dict], run_list: list[dict]) -> list[dict]:
     result = []
     for line in lines:
         covered = [run_list[number - 1] for number in line.get("runs", []) if 1 <= number <= len(run_list)]
+        covered.sort(key=lambda run: run["start_ms"])
         gap = covered[-1]["gap_after_ms"] if covered else 0
         text = (line.get("text") or "").strip()
         result.append({
@@ -99,17 +105,17 @@ def default_lines(narration_text: str, start_ms: int, end_ms: int) -> list[dict]
         gap = DEFAULT_SENTENCE_MS if position == len(paragraphs) - 1 else DEFAULT_PARAGRAPH_MS
         result.append({"text": text, "runs": [], "start_ms": cursor, "end_ms": cursor + span, "gap_after_ms": gap, "break_s": break_seconds(gap, text)})
         cursor += span
-    if result:
-        result[-1]["end_ms"] = end_ms
+    result[-1]["end_ms"] = end_ms
     return result
 
 
 def render(lines: list[dict]) -> str:
     """Script text with a mark after every line that has a break."""
-    return "".join(
-        f"{line['text']} {mark(line['break_s'])}\n" if line.get("break_s") else f"{line['text']}\n"
-        for line in lines
-    )
+    parts = []
+    for line in lines:
+        text = line["text"].strip().replace("<", "").replace(">", "")
+        parts.append(f"{text} {mark(line['break_s'])}\n" if line.get("break_s") else f"{text}\n")
+    return "".join(parts)
 
 
 def split_parts(lines: list[dict]) -> list[list[dict]]:
@@ -119,7 +125,7 @@ def split_parts(lines: list[dict]) -> list[list[dict]]:
     chars = marks = 0
     for line in lines:
         has_mark = 1 if line.get("break_s") else 0
-        cost = len(line["text"]) + 1 + (20 if has_mark else 0)
+        cost = len(line["text"]) + 1 + (22 if has_mark else 0)
         if current and (chars + cost > PART_MAX_CHARS or marks + has_mark > PART_MAX_BREAKS):
             parts.append(current)
             current, chars, marks = [], 0, 0

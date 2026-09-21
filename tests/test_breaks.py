@@ -30,7 +30,7 @@ def test_runs_ignore_empty_phrases_and_sort_by_time():
 
 def test_break_table():
     assert breaks.break_seconds(100, "and then,") is None
-    assert breaks.break_seconds(200, "and then,") == 0.2
+    assert breaks.break_seconds(200, "and then,") is None
     assert breaks.break_seconds(200, "She never came home.") == 0.4  # a sentence end is lifted to the minimum
     assert breaks.break_seconds(760, "Frightened.”") == 0.8
     assert breaks.break_seconds(2600, "Long Island…") == 2.6
@@ -89,3 +89,28 @@ def test_parts_split_by_characters_and_by_marks():
 
     unmarked = [{"text": "m", "break_s": None} for _ in range(85)]
     assert len(breaks.split_parts(unmarked)) == 1
+
+
+def test_unsorted_run_numbers_still_give_a_forward_span():
+    run_list = breaks.runs([phrase(0, 8000, "A"), phrase(8600, 15000, "B"), phrase(15300, 20000, "C")], 20000)
+    enriched = breaks.attach_breaks([{"text": "x.", "runs": [3, 2]}], run_list)
+    assert enriched[0]["start_ms"] == 8600 and enriched[0]["end_ms"] == 20000
+
+
+def test_a_line_with_no_run_numbers_fails_coverage():
+    assert not breaks.covers_runs([{"text": "a", "runs": [1]}, {"text": "made up", "runs": []}, {"text": "b", "runs": [2]}], 2)
+
+
+def test_render_strips_text_and_drops_stray_markup():
+    assert breaks.render([{"text": "  One. <b>  ", "break_s": 0.5}]) == 'One. b <break time="0.5s" />\n'
+    assert breaks.render([]) == ""
+
+
+def test_a_single_oversize_line_is_emitted_alone():
+    parts = breaks.split_parts([{"text": "x" * 12000, "break_s": None}, {"text": "y", "break_s": None}])
+    assert [len(p) for p in parts] == [1, 1]
+
+
+def test_runs_with_nothing_or_an_earlier_next_phrase():
+    assert breaks.runs([], 1000) == []
+    assert breaks.runs([phrase(0, 900)], 1000, next_phrase_start_ms=800)[0]["gap_after_ms"] == 0
