@@ -139,3 +139,27 @@ parts" button.
 - A return step that assembles the ElevenLabs files (may follow if hand stitching proves tedious).
 - Enforcing English length against the Sinhala.
 - v3 audio-tag output.
+
+## Addendum, 2026-09-21: diarizer coverage
+
+The first real-model run (project `5f327b64-…`, 130 s slice) showed that one diarization call can
+drop narrator spans another call returns (5 s and 3 s stretches of chunk 1 in that run). A dropped
+span becomes a false long break, and the adaptation is pushed to squeeze the missing Sinhala into
+the neighbouring lines. FFmpeg silence detection cannot substitute: the narration sits on a music
+bed and nothing drops below the noise floor. Three changes, all approved by the owner, who asked
+for the best output regardless of model cost:
+
+1. **Second diarizer pass, gap-filling.** Every chunk is diarized twice. The first pass stays the
+   base for recording detection and clip transcripts. Narrator spans from the second pass are added
+   only where the first pass has no span at all, trimmed to the uncovered stretch, and only when the
+   uncovered stretch is at least 300 ms (`recordings.fill_gaps`). A third pass runs when the
+   narrator's coverage of the chunk's narration pieces is still under `COVERAGE_MIN` (0.85). A
+   failed extra pass is a warning, never a chunk failure.
+2. **Coverage guard.** For each narration segment, coverage is the phrases' total duration over
+   the segment's duration. Under `COVERAGE_MIN`, every break over `GUARDED_MAX_MS` (1000 ms) is
+   capped at 1.0 s and the job records "Phrases cover N% of segment K; breaks over 1.0 s capped",
+   so the reviewer knows which part to check by ear. Lines store `coverage` so the export can show it.
+3. **Prompt.** The runs-mode adaptation is told that run texts are rough machine transcripts,
+   possibly garbled or loosely translated, that show only where each run starts and ends; every fact
+   and sentence comes from the faithful translation, and nothing that appears only in a run text is
+   added.
