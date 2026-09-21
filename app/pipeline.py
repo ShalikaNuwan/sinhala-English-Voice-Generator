@@ -706,6 +706,9 @@ class Pipeline:
         pieces = script_parts.expand(script_parts.plan_parts(segments))
         if not pieces:
             raise RuntimeError("No reviewed narration to export yet")
+        for piece in pieces:
+            if piece["kind"] == "recording" and not (piece["audio_path"] and Path(piece["audio_path"]).is_file()):
+                raise RuntimeError(f"Kept recording for segment {piece['segment_index']} has no audio; regenerate it first")
         out_dir = self.config.data_dir / "projects" / project_id / "exports" / "script_parts"
         if out_dir.exists():
             shutil.rmtree(out_dir)
@@ -714,10 +717,7 @@ class Pipeline:
         for piece in pieces:
             name = script_parts.file_name(piece)
             if piece["kind"] == "recording":
-                source = Path(piece["audio_path"]) if piece["audio_path"] else None
-                if source is None or not source.is_file():
-                    raise RuntimeError(f"Kept recording for segment {piece['segment_index']} has no audio; regenerate it first")
-                shutil.copyfile(source, out_dir / name)
+                shutil.copyfile(piece["audio_path"], out_dir / name)
             else:
                 (out_dir / name).write_text(script_parts.render(piece), encoding="utf-8")
             written[name] = str(out_dir / name)

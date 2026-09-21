@@ -34,7 +34,7 @@ def plan_parts(segments: list[dict]) -> list[dict]:
         if current is None:
             current = {"kind": "narration", "segments": [], "lines": [], "start_ms": segment["start_ms"], "end_ms": segment["end_ms"]}
         current["segments"].append(segment["segment_index"])
-        current["lines"].extend(lines)
+        current["lines"].extend(dict(line, segment_index=segment["segment_index"]) for line in lines)
         current["end_ms"] = segment["end_ms"]
     if current:
         parts.append(current)
@@ -53,11 +53,15 @@ def expand(parts: list[dict]) -> list[dict]:
             pieces.append({
                 "kind": "narration",
                 "number": len(pieces) + 1,
-                "segments": part["segments"],
+                "segments": sorted({line["segment_index"] for line in chunk if "segment_index" in line}) or part["segments"],
                 "lines": chunk,
                 "start_ms": timed[0]["start_ms"] if timed else part["start_ms"],
                 "end_ms": timed[-1]["end_ms"] if timed else part["end_ms"],
             })
+    if pieces and pieces[-1]["kind"] == "narration" and pieces[-1]["lines"]:
+        # Nothing follows the programme's last line, so a trailing mark would only append silence.
+        last = pieces[-1]["lines"]
+        last[-1] = dict(last[-1], break_s=None)
     return pieces
 
 
@@ -75,15 +79,16 @@ def index_lines(pieces: list[dict]) -> list[str]:
     """A human-readable order sheet, one line per file."""
     lines = ["# Script parts, in playing order", "",
              "Voice each narration file on its own (ElevenLabs Multilingual v2 reads the break marks), then place",
-             "the recording files between the voiced parts. Target is the length of the original passage.", ""]
+             "the recording files between the voiced parts. Target is the length of the original passage; a mark at",
+             "the end of a narration file is the narrator's pause before the recording that follows it.", ""]
     for piece in pieces:
         span = f"{piece['start_ms'] / 1000:.1f}-{piece['end_ms'] / 1000:.1f} s"
+        duration = (piece["end_ms"] - piece["start_ms"]) / 1000
         if piece["kind"] == "recording":
-            lines.append(f"- `{file_name(piece)}`: kept recording, segment {piece['segment_index']}, source {span}")
+            lines.append(f"- `{file_name(piece)}`: kept recording, segment {piece['segment_index']}, source {span}, duration {duration:.1f} s")
         else:
             segs = ", ".join(str(index) for index in piece["segments"])
-            chars = sum(len(line["text"]) for line in piece["lines"])
+            chars = len(render(piece))
             marks = sum(1 for line in piece["lines"] if line.get("break_s"))
-            target = (piece["end_ms"] - piece["start_ms"]) / 1000
-            lines.append(f"- `{file_name(piece)}`: narration, segments {segs}, source {span}, target {target:.1f} s, {chars} characters, {marks} break mark{'s' if marks != 1 else ''}")
+            lines.append(f"- `{file_name(piece)}`: narration, segments {segs}, source {span}, target {duration:.1f} s, {chars} characters, {marks} break mark{'s' if marks != 1 else ''}")
     return lines

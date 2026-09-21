@@ -54,10 +54,30 @@ def test_index_lines_report_marks_and_target_length():
 
     lines = script_parts.index_lines(pieces)
 
-    assert lines[-2] == "- `01_narration.txt`: narration, segments 1, source 0.0-12.0 s, target 12.0 s, 4 characters, 1 break mark"
-    assert lines[-1] == "- `02_recording_segment002.wav`: kept recording, segment 2, source 12.0-20.0 s"
+    assert lines[-2] == "- `01_narration.txt`: narration, segments 1, source 0.0-12.0 s, target 12.0 s, 28 characters, 1 break mark"
+    assert lines[-1] == "- `02_recording_segment002.wav`: kept recording, segment 2, source 12.0-20.0 s, duration 8.0 s"
 
 
 def test_render_of_a_piece_matches_breaks_render():
     piece = {"kind": "narration", "lines": [line("A.", 0.6, 0, 1), line("B", None, 2, 3)]}
     assert script_parts.render(piece) == breaks.render(piece["lines"])
+
+
+def test_empty_narration_is_skipped_and_order_is_by_index():
+    parts = script_parts.plan_parts([seg(2, text="Second."), seg(1, text="First."), seg(3, text="   ")])
+
+    assert len(parts) == 1 and parts[0]["segments"] == [1, 2]
+    assert [l["text"] for l in parts[0]["lines"]] == ["First.", "Second."]
+
+
+def test_split_pieces_name_only_the_segments_they_contain():
+    first = [line("x" * 5000, 0.5, 0, 5), line("y" * 5000, 0.5, 10, 15)]
+    pieces = script_parts.expand(script_parts.plan_parts([seg(1, lines=first), seg(2, lines=[line("Tail.", 0.5, 20, 25)])]))
+
+    assert [p["segments"] for p in pieces] == [[1], [1, 2]]
+
+
+def test_the_programme_s_last_line_carries_no_mark():
+    pieces = script_parts.expand(script_parts.plan_parts([seg(1, lines=[line("A.", 0.6, 0, 1), line("B.", 0.5, 2, 3)])]))
+
+    assert script_parts.render(pieces[-1]) == 'A. <break time="0.6s" />\nB.\n'

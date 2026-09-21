@@ -927,7 +927,7 @@ pause ends a run. The adaptation writes the English as one line per run, in orde
 only when English grammar forces it), so every line has a measured silence after it. That silence is
 written after the line as `<break time="0.8s" />`, which ElevenLabs Multilingual v2 honours (v3 does
 not read break tags). A line that ends a sentence gets at least 400 ms; nothing exceeds 3.0 s; a
-gap under 150 ms writes no mark. The table lives at the top of `app/breaks.py`. When a segment's
+gap under 300 ms writes no mark. The table lives at the top of `app/breaks.py`. When a segment's
 lines do not cover its runs, QA sends it to review with "Script lines do not follow the spoken
 runs". Segments without phrase data (detection off, or older jobs) export their paragraphs with
 default breaks of 0.9 s between paragraphs and 0.5 s at the end.

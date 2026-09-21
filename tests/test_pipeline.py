@@ -1146,7 +1146,7 @@ def test_script_parts_export_writes_marked_lines_around_recordings(tmp_path):
     # Segment 1's single run ends at the recording with no measurable gap, but a sentence end always
     # gets the 0.4 s floor; segments 3 and 4 each have one run, ending the same way.
     assert Path(written["01_narration.txt"]).read_text(encoding="utf-8") == 'Line 1. <break time="0.4s" />\n'
-    assert Path(written["03_narration.txt"]).read_text(encoding="utf-8") == 'Line 1. <break time="0.4s" />\nLine 1. <break time="0.4s" />\n'
+    assert Path(written["03_narration.txt"]).read_text(encoding="utf-8") == 'Line 1. <break time="0.4s" />\nLine 1.\n'
     assert 10100 <= pipeline.audio.probe(Path(written["02_recording_segment002.wav"])).duration_ms <= 10500
     index = Path(written["index.md"]).read_text(encoding="utf-8")
     assert "`01_narration.txt`: narration, segments 1, source 0.0-19.9 s, target 19.9 s" in index
@@ -1163,9 +1163,8 @@ def test_script_parts_export_writes_measured_breaks(tmp_path):
     written = pipeline.export_script_parts(project_id)
 
     text = Path(written["01_narration.txt"]).read_text(encoding="utf-8")
-    assert text == 'Line 1. <break time="0.6s" />\nLine 2. <break time="0.4s" />\nLine 3. <break time="0.6s" />\nLine 1. <break time="0.4s" />\n'
-    assert "3 break marks" not in Path(written["index.md"]).read_text(encoding="utf-8")
-    assert "4 break marks" in Path(written["index.md"]).read_text(encoding="utf-8")
+    assert text == 'Line 1. <break time="0.6s" />\nLine 2. <break time="0.4s" />\nLine 3. <break time="0.6s" />\nLine 1.\n'
+    assert "3 break marks" in Path(written["index.md"]).read_text(encoding="utf-8")
 
 
 def test_script_parts_export_is_refused_when_a_recording_has_no_audio(tmp_path):
