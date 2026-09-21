@@ -1,7 +1,10 @@
 """Run the real pipeline on a slice of an existing project's source with the actual models.
 
 Usage:
-    OPENAI_API_KEY=... .venv/bin/python scripts/end_to_end_check.py <source_project_id> <start_s> <end_s>
+    OPENAI_API_KEY=... .venv/bin/python scripts/end_to_end_check.py <source_project_id> <start_s> <end_s> [--text-only]
+
+With --text-only the job voices nothing (voice_stage false), no assembly is attempted, and the
+script parts export is written instead, so the owner can voice the parts in ElevenLabs.
 
 Cuts [start_s, end_s] from the source project's normalised audio, creates a new project through
 the HTTP API, uploads the slice, runs a processing job to completion (the review gate is on, so
@@ -24,9 +27,11 @@ from app.main import app, db, pipeline  # noqa: E402
 
 
 def main() -> None:
-    if len(sys.argv) != 4:
+    args = [a for a in sys.argv[1:] if a != "--text-only"]
+    text_only = "--text-only" in sys.argv
+    if len(args) != 3:
         sys.exit(__doc__)
-    source_project, start_s, end_s = sys.argv[1], float(sys.argv[2]), float(sys.argv[3])
+    source_project, start_s, end_s = args[0], float(args[1]), float(args[2])
     source = settings.data_dir / "projects" / source_project / "original" / "source_normalized.wav"
     if not source.exists():
         sys.exit(f"No normalised source at {source}")
@@ -54,7 +59,7 @@ def main() -> None:
     print("project", project_id, "uploaded", uploaded.json()["duration_ms"], "ms", flush=True)
 
     # TestClient runs background tasks before returning, so this call blocks until the job finishes.
-    started = client.post(f"/api/projects/{project_id}/process", json={"human_review_gate": True})
+    started = client.post(f"/api/projects/{project_id}/process", json={"human_review_gate": True, "voice_stage": not text_only})
     started.raise_for_status()
     job_id = started.json()["job_id"]
     job = client.get(f"/api/jobs/{job_id}").json()
@@ -73,7 +78,15 @@ def main() -> None:
     for s in segments:
         if s["kind"] == "original":
             client.post(f"/api/segments/{s['id']}/confirm").raise_for_status()
-    if job["status"] == "awaiting_review":
+    if text_only and job["status"] == "awaiting_review":
+        exported = client.post(f"/api/projects/{project_id}/export/parts")
+        lines += ["## Script parts export", f"status {exported.status_code}", ""]
+        for name, url in (exported.json().items() if exported.status_code == 200 else []):
+            lines.append(f"- {name}: {url}")
+        parts_dir = settings.data_dir / "projects" / project_id / "exports" / "script_parts"
+        if (parts_dir / "index.md").exists():
+            lines += ["", (parts_dir / "index.md").read_text(encoding="utf-8")]
+    elif job["status"] == "awaiting_review":
         assembled = client.post(f"/api/projects/{project_id}/assemble")
         lines += ["## Assembly", f"status {assembled.status_code}: {assembled.json()}", ""]
         export_dir = settings.data_dir / "projects" / project_id / "exports"
