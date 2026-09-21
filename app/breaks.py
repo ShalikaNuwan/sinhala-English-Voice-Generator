@@ -50,18 +50,27 @@ def runs(phrases: list[dict], segment_end_ms: int, next_phrase_start_ms: int | N
 
 
 def coverage(phrases: list[dict], start_ms: int, end_ms: int) -> float:
-    """How much of a segment the diarizer actually heard as speech, 0 to 1.
+    """How much of the narrator's stretch was actually heard as speech, 0 to 1.
 
-    Phrases are clamped to the segment and an overlap is counted once. A segment with no length
-    has nothing to cover, so it counts as covered.
+    The stretch runs from the first phrase to the last, clamped to the segment, so silence before
+    the narrator starts (after a recording, say) or after they finish does not count against them;
+    only holes between phrases do. An overlap is counted once. No phrases, or a segment with no
+    length, gives 0.0 and 1.0 respectively.
     """
-    length = end_ms - start_ms
+    if end_ms - start_ms <= 0:
+        return 1.0
+    ordered = sorted(phrases, key=lambda item: item["start_ms"])
+    if not ordered:
+        return 0.0
+    first = max(start_ms, min(item["start_ms"] for item in ordered))
+    last = min(end_ms, max(item["end_ms"] for item in ordered))
+    length = last - first
     if length <= 0:
         return 1.0
     heard = 0
-    reached = start_ms
-    for phrase in sorted(phrases, key=lambda item: item["start_ms"]):
-        begin, finish = max(start_ms, phrase["start_ms"], reached), min(end_ms, phrase["end_ms"])
+    reached = first
+    for phrase in ordered:
+        begin, finish = max(first, phrase["start_ms"], reached), min(last, phrase["end_ms"])
         if finish > begin:
             heard += finish - begin
             reached = finish

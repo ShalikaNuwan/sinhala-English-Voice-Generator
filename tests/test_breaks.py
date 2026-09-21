@@ -119,17 +119,19 @@ def test_runs_with_nothing_or_an_earlier_next_phrase():
 
 
 def test_coverage_is_what_the_phrases_fill_of_the_segment():
-    assert breaks.coverage([phrase(0, 4000), phrase(40000, 44000)], 0, 45000) == pytest.approx(8 / 45)
+    assert breaks.coverage([phrase(0, 4000), phrase(40000, 44000)], 0, 45000) == pytest.approx(8 / 44)
+    # Silence before the first phrase or after the last is not a hole in the narrator's speech.
+    assert breaks.coverage([phrase(5000, 10000), phrase(10300, 15000)], 0, 20000) == pytest.approx(9700 / 10000)
     assert breaks.coverage([phrase(0, 45000)], 0, 45000) == 1.0
     # A phrase reaching past the segment counts only as far as the segment goes.
-    assert breaks.coverage([phrase(-1000, 5000)], 0, 10000) == 0.5
+    assert breaks.coverage([phrase(-1000, 5000)], 0, 10000) == 1.0
     assert breaks.coverage([], 0, 10000) == 0.0
     assert breaks.coverage([phrase(0, 100)], 5000, 5000) == 1.0
 
 
 def test_coverage_does_not_count_overlapping_phrases_twice():
-    assert breaks.coverage([phrase(0, 6000), phrase(4000, 9000)], 0, 10000) == 0.9
-    assert breaks.coverage([phrase(0, 9000), phrase(2000, 3000)], 0, 10000) == 0.9
+    assert breaks.coverage([phrase(0, 6000), phrase(4000, 7000), phrase(8000, 10000)], 0, 10000) == 0.9
+    assert breaks.coverage([phrase(0, 8000), phrase(2000, 3000), phrase(9000, 10000)], 0, 10000) == 0.9
 
 
 def test_break_seconds_honours_a_lower_cap():

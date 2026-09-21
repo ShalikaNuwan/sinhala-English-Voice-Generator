@@ -8,7 +8,7 @@ import uuid
 from pathlib import Path
 from typing import Callable, TypeVar
 
-from . import breaks, pauses, recordings, script_parts, speaking_profile
+from . import breaks, pauses, recordings, script_parts, speaking_profile, turns
 from .ai import AIClient, PROMPT_VERSION
 from .audio import AudioError, AudioService
 from .config import Settings
@@ -319,6 +319,7 @@ class Pipeline:
             for turn in heard
             if offset_ms + turn["end_ms"] > start_ms and offset_ms + turn["start_ms"] < end_ms
         ]
+        phrases = turns.drop_edge_fragments(sorted(phrases, key=lambda item: item["start_ms"]), start_ms, end_ms)
         if phrases and not any(phrase["text"] for phrase in phrases):
             # Nothing came back transcribed, but the silences are measured all the same: keep the map.
             phrases = [dict(phrase, text=SPEECH_NOTE) for phrase in phrases]

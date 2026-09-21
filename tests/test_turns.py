@@ -63,3 +63,19 @@ def test_turns_come_back_sorted_by_start_whatever_order_they_arrived_in():
     events = [start(5000, "b"), start(1000, "a"), stop(2200, "a"), stop(6200, "b")]
 
     assert [turn["start_ms"] for turn in turns.pair_events(events, 200, 9000)] == [1000, 5000]
+
+
+def test_a_scrap_touching_a_piece_edge_is_dropped_and_a_real_phrase_there_is_kept():
+    phrases = [
+        {"start_ms": 20, "end_ms": 200, "text": "ස්"},
+        {"start_ms": 500, "end_ms": 9000, "text": "full"},
+        {"start_ms": 9200, "end_ms": 9980, "text": "also full"},
+    ]
+    assert [p["text"] for p in turns.drop_edge_fragments(phrases, 0, 10000)] == ["full", "also full"]
+
+    tail = [{"start_ms": 500, "end_ms": 9000, "text": "full"}, {"start_ms": 9832, "end_ms": 10000, "text": "Éd"}]
+    assert [p["text"] for p in turns.drop_edge_fragments(tail, 0, 10000)] == ["full"]
+
+    inside = [{"start_ms": 500, "end_ms": 700, "text": "short but not at an edge"}]
+    assert turns.drop_edge_fragments(inside, 0, 10000) == inside
+    assert turns.drop_edge_fragments([], 0, 10000) == []

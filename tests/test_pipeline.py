@@ -1539,5 +1539,5 @@ def test_full_phrase_coverage_leaves_the_measured_breaks_alone(tmp_path):
 
     first = db.one("SELECT * FROM segments WHERE job_id=? AND segment_index=1", (job_id,))
     assert [line["break_s"] for line in first["lines"]] == [0.6, 0.4, 0.6]
-    assert [line["coverage"] for line in first["lines"]] == [0.97, 0.97, 0.97]
+    assert [line["coverage"] for line in first["lines"]] == [0.98, 0.98, 0.98]  # 43900 heard of the 44700 ms stretch
     assert not any("Phrases cover" in warning for warning in db.one("SELECT * FROM jobs WHERE id=?", (job_id,))["warnings"] or [])
