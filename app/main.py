@@ -41,6 +41,7 @@ def job_configuration(payload: ProcessRequest, config: Settings) -> dict:
         "diarize_model": payload.diarize_model or config.diarize_model,
         "detect_recordings": payload.detect_recordings if payload.detect_recordings is not None else config.detect_recordings,
         "align_model": payload.align_model or config.align_model,
+        "pause_source": payload.pause_source or config.pause_source,
         "shape_pauses": payload.shape_pauses if payload.shape_pauses is not None else config.shape_pauses,
         "master_voice": payload.master_voice if payload.master_voice is not None else config.master_voice,
         "voice_stage": payload.voice_stage if payload.voice_stage is not None else config.voice_stage,

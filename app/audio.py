@@ -123,6 +123,19 @@ class AudioService:
         ])
         return self.probe(destination)
 
+    def to_pcm(self, source: Path, destination: Path) -> int:
+        """Write the audio as headerless 24 kHz mono 16-bit PCM, the format a Realtime session takes.
+
+        Returns the duration in milliseconds, counted from the file's own length: 48 bytes a
+        millisecond, so no second ffprobe is needed and the count matches what was streamed.
+        """
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        self._run([
+            self.ffmpeg, "-y", "-v", "error", "-i", str(source),
+            "-vn", "-ac", "1", "-ar", "24000", "-f", "s16le", str(destination),
+        ])
+        return round(destination.stat().st_size / 48)
+
     def _loudness(self, source: Path, start_ms: int, end_ms: int) -> dict:
         """Measure a cut so loudness can be applied as a static gain; single-pass loudnorm is a no-op under 3 s."""
         try:

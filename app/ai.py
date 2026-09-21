@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 import base64
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from openai import OpenAI
+from openai import AsyncOpenAI, OpenAI
 
-from . import elevenlabs
+from . import elevenlabs, turns
 from .direction import build_instructions, speaking_speed
 from .recordings import NARRATOR
 from .schemas import FaithfulTranslation, NarrationAdaptation, QAEvaluation
@@ -13,16 +16,35 @@ from .schemas import FaithfulTranslation, NarrationAdaptation, QAEvaluation
 
 PROMPT_VERSION = "2026-09-mvp3"
 
+# A Realtime transcription session takes raw 16-bit mono PCM at this rate, in small pieces.
+TURN_SAMPLE_RATE = 24000
+TURN_PIECE_MS = 100
+# Events stop arriving long before the socket closes, so the session ends on quiet, or on the cap.
+TURN_RECV_TIMEOUT_S = 5.0
+TURN_QUIET_LIMIT = 3
+TURN_SESSION_MAX_S = 360.0
+
 
 def _field(item, name: str):
     """Read a field from either an SDK object or a plain dict."""
     return item.get(name) if isinstance(item, dict) else getattr(item, name, None)
 
 
+def _run_coroutine(coroutine):
+    """Run a coroutine from synchronous code, in a worker thread when this one already has a loop."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coroutine)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coroutine).result()
+
+
 class AIClient:
     def __init__(self, api_key: str | None, elevenlabs_config: dict | None = None):
         if not api_key:
             raise RuntimeError("OPENAI_API_KEY is required before processing audio")
+        self.api_key = api_key
         self.client = OpenAI(api_key=api_key)
         # Every text stage stays on OpenAI. Only voicing can be handed to another provider.
         self.elevenlabs = elevenlabs_config or None
@@ -70,6 +92,73 @@ class AIClient:
             }
             for segment in (_field(result, "segments") or [])
         ]
+
+    def _async_client(self) -> AsyncOpenAI:
+        """A client for one Realtime session: each session runs its own loop, and a pool cannot cross loops."""
+        return AsyncOpenAI(api_key=self.api_key)
+
+    def speech_turns(
+        self, pcm_path: Path, duration_ms: int, threshold: float, silence_ms: int, model: str,
+    ) -> list[dict]:
+        """When the speaker starts and stops, heard by a Realtime session's voice detection.
+
+        Server VAD is the only source of millisecond speech boundaries in the API: the diarizer's
+        spans move between calls on the same audio. Times are file-relative; pairing lives in `turns`.
+        """
+        events = _run_coroutine(self._listen(Path(pcm_path), threshold, silence_ms, model))
+        return turns.pair_events(events, silence_ms, duration_ms)
+
+    async def _listen(self, pcm_path: Path, threshold: float, silence_ms: int, model: str) -> list[dict]:
+        """Stream raw PCM into one transcription session and collect its events in arrival order."""
+        audio = pcm_path.read_bytes()
+        events: list[dict] = []
+        failure: str | None = None
+        client = self._async_client()
+        # No model in the URL: the session carries it, and a model in the query is rejected.
+        async with client.realtime.connect(extra_query={"intent": "transcription"}) as connection:
+            await connection.session.update(session={
+                "type": "transcription",
+                "audio": {
+                    "input": {
+                        "format": {"type": "audio/pcm", "rate": TURN_SAMPLE_RATE},
+                        "turn_detection": {
+                            "type": "server_vad",
+                            "threshold": threshold,
+                            "prefix_padding_ms": 0,
+                            "silence_duration_ms": silence_ms,
+                        },
+                        "transcription": {"model": model},
+                    },
+                },
+            })
+            piece = TURN_SAMPLE_RATE * 2 * TURN_PIECE_MS // 1000
+            for offset in range(0, len(audio), piece):
+                await connection.input_audio_buffer.append(
+                    audio=base64.b64encode(audio[offset:offset + piece]).decode("ascii"),
+                )
+            await connection.input_audio_buffer.commit()
+            quiet = 0
+            deadline = time.monotonic() + TURN_SESSION_MAX_S
+            while quiet < TURN_QUIET_LIMIT and time.monotonic() < deadline:
+                try:
+                    event = await asyncio.wait_for(connection.recv(), timeout=TURN_RECV_TIMEOUT_S)
+                except asyncio.TimeoutError:
+                    quiet += 1
+                    continue
+                kind = _field(event, "type")
+                if kind == "input_audio_buffer.speech_started":
+                    events.append({"type": "start", "ms": event.audio_start_ms, "item_id": event.item_id, "text": None})
+                elif kind == "input_audio_buffer.speech_stopped":
+                    events.append({"type": "stop", "ms": event.audio_end_ms, "item_id": event.item_id, "text": None})
+                elif kind == "conversation.item.input_audio_transcription.completed":
+                    events.append({"type": "text", "ms": None, "item_id": event.item_id, "text": event.transcript or ""})
+                elif kind == "error":
+                    failure = _field(_field(event, "error"), "message") or "Realtime session failed"
+                    break
+        if failure and not any(event["type"] == "start" for event in events):
+            # Committing a buffer server VAD already took is routine; a session that heard nothing is not.
+            raise RuntimeError(failure)
+        return events
 
     def word_timestamps(self, audio_path: Path, model: str) -> list[dict]:
         """When each word of a voiced segment is spoken, so pauses can be tied to the script."""

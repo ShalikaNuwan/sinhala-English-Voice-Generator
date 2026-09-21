@@ -24,6 +24,8 @@ class ProcessRequest(BaseModel):
     diarize_model: str | None = None
     detect_recordings: bool | None = None
     align_model: str | None = None
+    # "diarizer" takes the phrase times from the diarizer's narrator spans instead of the Realtime VAD.
+    pause_source: Literal["realtime", "diarizer"] | None = None
     shape_pauses: bool | None = None
     master_voice: bool | None = None
     # False stops a job after the reviewed script: nothing is voiced, so the voice can be made elsewhere.

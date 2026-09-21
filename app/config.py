@@ -26,6 +26,14 @@ class Settings:
         default_factory=lambda: os.getenv("DETECT_RECORDINGS", "1").strip().lower() not in {"0", "false", "no"}
     )
     align_model: str = field(default_factory=lambda: os.getenv("ALIGN_MODEL", "whisper-1"))
+    # Where a narration segment's phrase times come from: the Realtime session's voice detection,
+    # or, with "diarizer", the narrator spans the diarization pass returned.
+    pause_source: str = field(default_factory=lambda: os.getenv("PAUSE_SOURCE", "realtime"))
+    realtime_vad_threshold: float = field(default_factory=lambda: float(os.getenv("REALTIME_VAD_THRESHOLD", "0.8")))
+    realtime_vad_silence_ms: int = field(default_factory=lambda: int(os.getenv("REALTIME_VAD_SILENCE_MS", "200")))
+    turn_transcribe_model: str = field(
+        default_factory=lambda: os.getenv("TURN_TRANSCRIBE_MODEL", "gpt-4o-transcribe")
+    )
     shape_pauses: bool = field(
         default_factory=lambda: os.getenv("SHAPE_PAUSES", "1").strip().lower() not in {"0", "false", "no"}
     )
@@ -54,6 +62,9 @@ class Settings:
 
     def __post_init__(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.pause_source = self.pause_source.strip().lower()
+        if self.pause_source not in {"realtime", "diarizer"}:
+            self.pause_source = "realtime"
         if self.database_path is None:
             self.database_path = self.data_dir / "app.db"
 

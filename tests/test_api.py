@@ -252,3 +252,40 @@ def test_script_parts_endpoint_returns_files_or_a_clear_refusal(tmp_path, monkey
     monkeypatch.setattr(module.pipeline, "export_script_parts", lambda pid: {"01_narration.txt": str(module.settings.data_dir / "projects" / pid / "exports" / "script_parts" / "01_narration.txt")})
     files = client.post(f"/api/projects/{project_id}/export/parts").json()
     assert files == {"01_narration.txt": f"/media/projects/{project_id}/exports/script_parts/01_narration.txt"}
+
+
+def test_the_pause_map_defaults_to_the_realtime_voice_detection(tmp_path, monkeypatch):
+    from app.config import Settings
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.delenv("PAUSE_SOURCE", raising=False)
+
+    config = Settings()
+
+    assert config.pause_source == "realtime"
+    assert config.realtime_vad_threshold == 0.8
+    assert config.realtime_vad_silence_ms == 200
+    assert config.turn_transcribe_model == "gpt-4o-transcribe"
+
+
+def test_the_pause_source_can_be_switched_to_the_diarizer_and_nonsense_falls_back(tmp_path, monkeypatch):
+    from app.config import Settings
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+
+    monkeypatch.setenv("PAUSE_SOURCE", " Diarizer ")
+    assert Settings().pause_source == "diarizer"
+
+    monkeypatch.setenv("PAUSE_SOURCE", "whatever")
+    assert Settings().pause_source == "realtime"
+
+
+def test_job_configuration_carries_the_pause_source():
+    from app.config import Settings
+    from app.main import job_configuration
+    from app.schemas import ProcessRequest
+
+    assert job_configuration(ProcessRequest(), Settings(openai_api_key="unused"))["pause_source"] == "realtime"
+    assert job_configuration(
+        ProcessRequest(pause_source="diarizer"), Settings(openai_api_key="unused"),
+    )["pause_source"] == "diarizer"
