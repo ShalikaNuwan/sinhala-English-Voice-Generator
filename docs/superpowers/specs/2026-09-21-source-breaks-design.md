@@ -163,3 +163,33 @@ for the best output regardless of model cost:
    possibly garbled or loosely translated, that show only where each run starts and ends; every fact
    and sentence comes from the faithful translation, and nothing that appears only in a run text is
    added.
+
+## Addendum 2, 2026-09-21: the pause map comes from Realtime voice detection
+
+The second real-model run showed the diarizer's other instability: the same chunk came back as 5,
+8 or 12 narrator spans on repeat calls, and a 17 s stretch as one span, so those stretches got no
+breaks. Its server-VAD chunking setting does not change the returned boundaries. Whisper cannot time
+Sinhala (20 words in 45 s), the GPT transcription models return no word times, and FFmpeg silence
+detection finds nothing under the music bed.
+
+OpenAI's Realtime API, in a transcription session with `server_vad`, reports every moment speech
+starts and stops in milliseconds, and transcribes each turn with `gpt-4o-transcribe`. Probed on the
+same chunks (threshold 0.8, silence 200 ms, no prefix padding): identical boundaries on repeat calls,
+two different settings within 60 ms of each other, the 17 s blob split into three turns, and the
+turn transcripts in Sinhala script. `audio_end_ms` includes the configured silence, so a turn ends
+at `audio_end_ms - silence_duration_ms`; a turn that is still open when the audio ends closes at the
+audio's end. Turns and transcripts pair by `item_id` (transcripts arrive out of order).
+
+Design:
+- `AIClient.speech_turns(pcm_path, threshold, silence_ms, model)` streams 24 kHz mono 16-bit PCM
+  into one transcription session and returns `[{start_ms, end_ms, text}]`, file-relative, sorted.
+  The pure pairing lives in `app/turns.py` (`pair_events(events, silence_ms, duration_ms)`), tested
+  without a network.
+- `_create_segments` builds every narration piece's phrases from its own audio's turns (the piece
+  file, or the chunk file shifted by the chunk lead), not from the diarizer's narrator spans. The
+  diarizer still finds the narrator and the recordings; its narrator spans remain the fallback,
+  with a warning "Pause map unavailable for segment N: …", when the Realtime call fails.
+- Settings: `PAUSE_SOURCE` (`realtime`, default; `diarizer` restores the old behaviour),
+  `REALTIME_VAD_THRESHOLD=0.8`, `REALTIME_VAD_SILENCE_MS=200`, `TURN_TRANSCRIBE_MODEL=gpt-4o-transcribe`.
+- Runs, lines, the coverage guard and the export are unchanged; they simply see better phrases.
+  A 45 s chunk takes about 23 s of wall-clock in one session; the owner accepted the time.
