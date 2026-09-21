@@ -57,11 +57,13 @@ segment.
 
 | Measured gap | Line ends a sentence (`. ! ? …`) | Line does not |
 |---|---|---|
-| under 150 ms | none | none |
-| 150 to 3000 ms | max(gap, 400) | gap |
+| under 300 ms | 0.4 s (a sentence end is lifted first) | none; the comma carries it |
+| 300 to 3000 ms | max(gap, 400) | gap |
 | over 3000 ms | 3.0 s | 3.0 s |
 
-  Constants: `FLOW_GAP_MS = 150`, `SENTENCE_MIN_MS = 400`, `BREAK_MAX_MS = 3000`, all in one place.
+  Constants: `FLOW_GAP_MS = 150` (run merging), `MIN_MARK_MS = 300` (ElevenLabs v2 already pauses
+  about that long at a comma, so a smaller mark only spends the tag budget), `SENTENCE_MIN_MS = 400`,
+  `BREAK_MAX_MS = 3000`, all in one place. Values are rounded to 0.1 s.
 - `mark(seconds) -> str` renders `<break time="0.8s" />`.
 
 ## Adaptation with runs
