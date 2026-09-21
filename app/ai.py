@@ -112,8 +112,19 @@ class AIClient:
         """Stream raw PCM into one transcription session and collect its events in arrival order."""
         audio = pcm_path.read_bytes()
         events: list[dict] = []
-        failure: str | None = None
         client = self._async_client()
+        try:
+            await self._stream(client, audio, events, threshold, silence_ms, model)
+        except Exception:  # noqa: BLE001 - a dropped connection keeps the turns already heard
+            if not any(event["type"] == "start" for event in events):
+                raise
+        finally:
+            await client.close()
+        return events
+
+    async def _stream(self, client: AsyncOpenAI, audio: bytes, events: list[dict], threshold: float, silence_ms: int, model: str) -> None:
+        """Send the audio and collect every event until the session goes quiet; an error event is noted, not fatal."""
+        failure: str | None = None
         # No model in the URL: the session carries it, and a model in the query is rejected.
         async with client.realtime.connect(extra_query={"intent": "transcription"}) as connection:
             await connection.session.update(session={
@@ -153,12 +164,11 @@ class AIClient:
                 elif kind == "conversation.item.input_audio_transcription.completed":
                     events.append({"type": "text", "ms": None, "item_id": event.item_id, "text": event.transcript or ""})
                 elif kind == "error":
+                    # Transcripts arrive last and out of order, so keep listening; the commit after
+                    # server VAD has already taken the buffer reports an empty commit every time.
                     failure = _field(_field(event, "error"), "message") or "Realtime session failed"
-                    break
         if failure and not any(event["type"] == "start" for event in events):
-            # Committing a buffer server VAD already took is routine; a session that heard nothing is not.
             raise RuntimeError(failure)
-        return events
 
     def word_timestamps(self, audio_path: Path, model: str) -> list[dict]:
         """When each word of a voiced segment is spoken, so pauses can be tied to the script."""

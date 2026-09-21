@@ -451,14 +451,21 @@ class FakeRealtimeConnection:
 
         if not self.script:
             raise asyncio.TimeoutError
-        return self.script.pop(0)
+        item = self.script.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
 
 
 class FakeRealtimeClient:
     def __init__(self, connection):
         self.connection = connection
         self.connect_kwargs = None
+        self.closed = False
         self.realtime = SimpleNamespace(connect=self._connect)
+
+    async def close(self):
+        self.closed = True
 
     def _connect(self, **kwargs):
         self.connect_kwargs = kwargs
@@ -540,16 +547,49 @@ def test_speech_turns_keeps_the_turns_it_heard_when_an_error_closes_the_session(
     connection = FakeRealtimeConnection([
         speech_event("input_audio_buffer.speech_started", "a", audio_start_ms=0),
         speech_event("input_audio_buffer.speech_stopped", "a", audio_end_ms=900),
-        # The explicit commit of a buffer server VAD already took is a routine complaint, not a loss.
+        # The explicit commit of a buffer server VAD already took is a routine complaint, not a loss,
+        # and the transcripts still arrive after it.
         SimpleNamespace(type="error", error=SimpleNamespace(message="buffer too small")),
+        speech_event("conversation.item.input_audio_transcription.completed", "a", transcript="heard"),
+    ])
+    ai = AIClient.__new__(AIClient)
+    ai.api_key = "test-key"
+    client = FakeRealtimeClient(connection)
+    ai._async_client = lambda: client
+
+    assert ai.speech_turns(pcm, 1000, 0.8, 200, "gpt-4o-transcribe") == [
+        {"start_ms": 0, "end_ms": 700, "text": "heard"},
+    ]
+    assert client.closed
+
+
+def test_speech_turns_keeps_partial_turns_when_the_connection_drops(tmp_path):
+    pcm = tmp_path / "chunk.pcm"
+    pcm.write_bytes(b"\x00\x00" * 24_000)
+    connection = FakeRealtimeConnection([
+        speech_event("input_audio_buffer.speech_started", "a", audio_start_ms=0),
+        speech_event("input_audio_buffer.speech_stopped", "a", audio_end_ms=900),
+        ConnectionError("connection closed"),
     ])
     ai = AIClient.__new__(AIClient)
     ai.api_key = "test-key"
     ai._async_client = lambda: FakeRealtimeClient(connection)
 
-    assert ai.speech_turns(pcm, 1000, 0.8, 200, "gpt-4o-transcribe") == [
-        {"start_ms": 0, "end_ms": 700, "text": ""},
-    ]
+    assert ai.speech_turns(pcm, 1000, 0.8, 200, "gpt-4o-transcribe") == [{"start_ms": 0, "end_ms": 700, "text": ""}]
+
+
+def test_speech_turns_raises_when_the_connection_drops_before_any_speech(tmp_path):
+    import pytest
+
+    pcm = tmp_path / "chunk.pcm"
+    pcm.write_bytes(b"\x00\x00" * 24_000)
+    connection = FakeRealtimeConnection([ConnectionError("connection closed")])
+    ai = AIClient.__new__(AIClient)
+    ai.api_key = "test-key"
+    ai._async_client = lambda: FakeRealtimeClient(connection)
+
+    with pytest.raises(ConnectionError):
+        ai.speech_turns(pcm, 1000, 0.8, 200, "gpt-4o-transcribe")
 
 
 def test_speech_turns_works_when_the_caller_already_runs_an_event_loop(tmp_path):

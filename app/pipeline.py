@@ -286,7 +286,7 @@ class Pipeline:
         return spans, pieces
 
     def _pause_map(
-        self, job_id: str, ai: AIClient, config: dict, index: int,
+        self, job_id: str, segment_id: str, ai: AIClient, config: dict, index: int,
         source_path: Path, offset_ms: int, start_ms: int, end_ms: int,
     ) -> list[dict] | None:
         """A narration piece's phrases as the Realtime voice detection heard them, or None on failure.
@@ -301,7 +301,7 @@ class Pipeline:
         try:
             duration_ms = self.audio.to_pcm(source_path, pcm)
             heard = self._tracked_call(
-                job_id, None, "pause_map", model, str(source_path),
+                job_id, segment_id, "pause_map", model, str(source_path),
                 lambda: ai.speech_turns(pcm, duration_ms, threshold, silence_ms, model),
             )
         except Exception as exc:  # noqa: BLE001 - the diarizer's narrator spans remain the fallback
@@ -320,6 +320,9 @@ class Pipeline:
             if offset_ms + turn["end_ms"] > start_ms and offset_ms + turn["start_ms"] < end_ms
         ]
         phrases = turns.drop_edge_fragments(sorted(phrases, key=lambda item: item["start_ms"]), start_ms, end_ms)
+        if not phrases:
+            self._warn(job_id, f"Pause map heard no speech in segment {index}; the diarizer's phrases stand")
+            return None
         if phrases and not any(phrase["text"] for phrase in phrases):
             # Nothing came back transcribed, but the silences are measured all the same: keep the map.
             phrases = [dict(phrase, text=SPEECH_NOTE) for phrase in phrases]
@@ -389,7 +392,7 @@ class Pipeline:
                 if pause_source == "realtime":
                     # A piece file starts at the piece; the chunk file starts a lead before its chunk.
                     offset = start_ms if source_path != chunk_path else chunk_start - self.audio.chunk_lead_ms(chunk_start)
-                    heard = self._pause_map(job_id, ai, config, index, source_path, offset, start_ms, end_ms)
+                    heard = self._pause_map(job_id, segment_id, ai, config, index, source_path, offset, start_ms, end_ms)
                     if heard is not None:
                         phrases = heard
                 self.db.execute(

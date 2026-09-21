@@ -1326,6 +1326,13 @@ class VadFakeAI(RecordingFakeAI):
         ]
 
 
+class MuteFakeAI(PhrasedFakeAI):
+    """The Realtime session answers but hears no speech at all."""
+
+    def turns_for(self, name, duration_ms):
+        return []
+
+
 class DeafFakeAI(PhrasedFakeAI):
     """The Realtime session is unavailable, so the diarizer's narrator spans have to carry the breaks."""
 
@@ -1353,8 +1360,14 @@ def test_the_pause_map_is_heard_from_each_pieces_own_audio(tmp_path):
         {"start_ms": 45_000, "end_ms": 49_800, "text": "E " + SINHALA},
         {"start_ms": 50_400, "end_ms": 65_000, "text": "F " + SINHALA},
     ]
+    # Segment 3 is the piece after the recording, cut as its own file starting at 30150 ms.
+    assert segments[2]["phrases"] == [
+        {"start_ms": 30_150, "end_ms": 34_150, "text": "A " + SINHALA},
+        {"start_ms": 34_750, "end_ms": 45_000, "text": "B " + SINHALA},
+    ]
     # The 600 ms the detection heard becomes the break; the last run runs up to the recorded voice.
     assert [line["gap_after_ms"] for line in segments[0]["lines"]] == [600, 150]
+    assert all(call["segment_id"] for call in db.all("SELECT segment_id FROM model_calls WHERE stage='pause_map'"))
     assert [call["path"].name for call in ai.turn_calls] == ["0001_piece.pcm", "0003_piece.pcm", "0002_source.pcm"]
     assert {(call["threshold"], call["silence_ms"], call["model"]) for call in ai.turn_calls} == {(0.8, 200, "fake-turns")}
     assert len(db.all("SELECT id FROM model_calls WHERE job_id=? AND stage='pause_map'", (job_id,))) == 3
@@ -1541,3 +1554,16 @@ def test_full_phrase_coverage_leaves_the_measured_breaks_alone(tmp_path):
     assert [line["break_s"] for line in first["lines"]] == [0.6, 0.4, 0.6]
     assert [line["coverage"] for line in first["lines"]] == [0.98, 0.98, 0.98]  # 43900 heard of the 44700 ms stretch
     assert not any("Phrases cover" in warning for warning in db.one("SELECT * FROM jobs WHERE id=?", (job_id,))["warnings"] or [])
+
+
+def test_a_pause_map_that_heard_nothing_warns_and_keeps_the_diarizer_phrases(tmp_path):
+    ai = MuteFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai, seconds=65)
+    job_id = start_job(db, project_id)
+
+    pipeline.process_job(job_id)
+
+    first = db.one("SELECT * FROM segments WHERE job_id=? AND segment_index=1", (job_id,))
+    assert [p["start_ms"] for p in first["phrases"]] == [0, 8100, 15600, 30300]
+    warnings = db.one("SELECT * FROM jobs WHERE id=?", (job_id,))["warnings"]
+    assert any("Pause map heard no speech in segment 1" in w for w in warnings)
