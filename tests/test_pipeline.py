@@ -944,12 +944,12 @@ def test_regenerating_tts_with_shaping_off_keeps_the_voice_as_is(tmp_path):
 
 
 def test_an_empty_word_list_is_reported_as_a_warning(tmp_path):
-    class MuteFakeAI(PausingFakeAI):
+    class WordlessFakeAI(PausingFakeAI):
         def word_timestamps(self, _audio_path, _model):
             self.timestamp_calls += 1
             return []
 
-    ai = MuteFakeAI()
+    ai = WordlessFakeAI()
     pipeline, db, project_id = build_project(tmp_path, ai)
     job_id = start_job(db, project_id)
 
@@ -1160,7 +1160,8 @@ def test_a_text_only_job_reviews_the_script_without_voicing_anything(tmp_path):
     pipeline.process_job(job_id)
 
     segment = db.one("SELECT * FROM segments WHERE project_id=?", (project_id,))
-    assert ai.synthesis_calls == [] and ai.timestamp_calls == 0 if hasattr(ai, "timestamp_calls") else ai.synthesis_calls == []
+    assert ai.synthesis_calls == []
+    assert getattr(ai, "timestamp_calls", 0) == 0
     # FakeAI's diarize gives this 1 s source a single narrator phrase, so it adapts over one run.
     assert segment["narration_en"] == "Line 1."
     assert segment["tts_audio_path"] is None and segment["tts_duration_ms"] is None
@@ -1567,3 +1568,50 @@ def test_a_pause_map_that_heard_nothing_warns_and_keeps_the_diarizer_phrases(tmp
     assert [p["start_ms"] for p in first["phrases"]] == [0, 8100, 15600, 30300]
     warnings = db.one("SELECT * FROM jobs WHERE id=?", (job_id,))["warnings"]
     assert any("Pause map heard no speech in segment 1" in w for w in warnings)
+
+
+def test_a_reviewers_script_edit_reaches_the_export_with_the_measured_breaks(tmp_path):
+    ai = PhrasedFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai, seconds=65)
+    job_id = start_job(db, project_id, voice_stage=False)
+    pipeline.process_job(job_id)
+    first = db.one("SELECT * FROM segments WHERE job_id=? AND segment_index=1", (job_id,))
+
+    pipeline.edit_script(first["id"], "Edited one.\n\nEdited two\n\nEdited three.")
+
+    edited = db.one("SELECT * FROM segments WHERE id=?", (first["id"],))
+    assert [line["text"] for line in edited["lines"]] == ["Edited one.", "Edited two", "Edited three."]
+    assert [line["runs"] for line in edited["lines"]] == [line["runs"] for line in first["lines"]]
+    assert [line["break_s"] for line in edited["lines"]] == [0.6, 0.6, 0.6]  # the unpunctuated line keeps its measured 600 ms
+    written = pipeline.export_script_parts(project_id)
+    assert Path(written["01_narration.txt"]).read_text(encoding="utf-8").startswith('Edited one. <break time="0.6s" />\nEdited two <break time="0.6s" />\n')
+
+
+def test_a_reshaped_script_edit_drops_the_lines_and_exports_with_default_breaks(tmp_path):
+    ai = PhrasedFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai, seconds=65)
+    job_id = start_job(db, project_id, voice_stage=False)
+    pipeline.process_job(job_id)
+    first = db.one("SELECT * FROM segments WHERE job_id=? AND segment_index=1", (job_id,))
+
+    pipeline.edit_script(first["id"], "Now just one paragraph.")
+
+    assert db.one("SELECT * FROM segments WHERE id=?", (first["id"],))["lines"] == []
+    written = pipeline.export_script_parts(project_id)
+    assert Path(written["01_narration.txt"]).read_text(encoding="utf-8").startswith('Now just one paragraph. <break time="0.5s" />')
+
+
+def test_regenerating_a_text_only_segment_never_synthesizes(tmp_path):
+    ai = PhrasedFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai, seconds=65)
+    job_id = start_job(db, project_id, voice_stage=False)
+    pipeline.process_job(job_id)
+    first = db.one("SELECT * FROM segments WHERE job_id=? AND segment_index=1", (job_id,))
+    adaptations = len(ai.adapt_calls)
+
+    pipeline.regenerate_segment(first["id"], "tts")
+    assert ai.synthesis_calls == []
+    assert db.one("SELECT tts_audio_path FROM segments WHERE id=?", (first["id"],))["tts_audio_path"] is None
+
+    pipeline.regenerate_segment(first["id"], "adaptation")
+    assert len(ai.adapt_calls) == adaptations + 1 and ai.synthesis_calls == []

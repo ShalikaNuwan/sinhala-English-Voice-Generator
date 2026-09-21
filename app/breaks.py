@@ -125,6 +125,24 @@ def attach_breaks(lines: list[dict], run_list: list[dict], cap_ms: int = BREAK_M
     return result
 
 
+def relines(lines: list[dict], text: str, coverage_min: float) -> list[dict] | None:
+    """Carry a reviewer's edited script back onto the stored lines, one paragraph per line.
+
+    narration_text is the lines joined by blank lines, so the paragraphs map onto the lines in
+    order. Each keeps its runs, times and measured silence; only the text and the break it earns
+    change. A different paragraph count means the reviewer reshaped the script, and None says the
+    lines no longer apply.
+    """
+    paragraphs = [p.strip() for p in (text or "").split("\n\n") if p.strip()]
+    if not lines or len(paragraphs) != len(lines):
+        return None
+    result = []
+    for line, paragraph in zip(lines, paragraphs):
+        cap = GUARDED_MAX_MS if line.get("coverage", 1.0) < coverage_min else BREAK_MAX_MS
+        result.append(dict(line, text=paragraph, break_s=break_seconds(line.get("gap_after_ms") or 0, paragraph, cap_ms=cap)))
+    return result
+
+
 def default_lines(narration_text: str, start_ms: int, end_ms: int) -> list[dict]:
     """Lines for a segment without phrase data: one per paragraph, default breaks, time shared by length."""
     paragraphs = [p.strip() for p in (narration_text or "").split("\n\n") if p.strip()]

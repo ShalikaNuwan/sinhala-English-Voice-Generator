@@ -67,6 +67,7 @@ All model names are environment variables so deployment is not tied to a changin
 | `DIARIZE_MODEL` | `gpt-4o-transcribe-diarize` |
 | `DETECT_RECORDINGS` | `1` |
 | `ALIGN_MODEL` | `whisper-1` |
+| `VOICE_STAGE` | `1` |
 | `PAUSE_SOURCE` | `realtime` |
 | `REALTIME_VAD_THRESHOLD` | `0.8` |
 | `REALTIME_VAD_SILENCE_MS` | `200` |
@@ -198,7 +199,8 @@ the persona or rules.
 Creator videos often play real evidence audio: a 911 call, an interrogation, a news clip. That audio
 must not be translated or re-voiced. Once per project the pipeline diarizes the delivery sample,
 takes the dominant speaker's longest span (2–10 s) as the narrator reference, and stores it in the
-speaking profile. Every chunk is then diarized with that reference. A recording starts at speech by
+speaking profile. Every chunk is then diarized with that reference, twice, the second pass filling
+narrator stretches the first dropped. A recording starts at speech by
 someone other than the narrator in a Latin-only script and continues, across its own silences,
 until the narrator speaks again in Sinhala. Recordings under 1.5 s are ignored; kept ones are padded
 150 ms into silence.

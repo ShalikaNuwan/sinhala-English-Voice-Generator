@@ -95,5 +95,5 @@ def index_lines(pieces: list[dict]) -> list[str]:
             marks = sum(1 for line in piece["lines"] if line.get("break_s"))
             heard = min((line["coverage"] for line in piece["lines"] if line.get("coverage") is not None), default=1.0)
             thin = f", coverage {heard:.0%} (check breaks by ear)" if heard < recordings.COVERAGE_MIN else ""
-            lines.append(f"- `{file_name(piece)}`: narration, segments {segs}, source {span}, target {duration:.1f} s, {chars} characters, {marks} break mark{'s' if marks != 1 else ''}{lead}{thin}")
+            lines.append(f"- `{file_name(piece)}`: narration, segment{'s' if len(piece['segments']) != 1 else ''} {segs}, source {span}, target {duration:.1f} s, {chars} characters, {marks} break mark{'s' if marks != 1 else ''}{lead}{thin}")
     return lines

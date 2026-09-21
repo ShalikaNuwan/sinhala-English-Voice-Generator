@@ -109,7 +109,7 @@ class Pipeline:
     def _adapt_lines(self, ai: AIClient, job: dict, project: dict, segment: dict, faithful_text: str, previous_narration: str):
         """Adapt a segment as lines over its spoken runs; fall back to a passage when it has no phrases.
 
-        Returns (narration_text, style, lines, lines_ok, run_count).
+        Returns (narration_text, style, lines, lines_ok).
         """
         config = job["config"]
         phrases = segment.get("phrases") or []
@@ -136,7 +136,7 @@ class Pipeline:
             lines = breaks.attach_breaks(raw_lines, run_list, cap_ms=cap_ms)
             lines = [dict(line, coverage=round(cov, 2)) for line in lines]
         narration_text = "\n\n".join(line["text"] for line in lines) if lines else adaptation.narration_text
-        return narration_text, style, lines, lines_ok, len(run_list)
+        return narration_text, style, lines, lines_ok
 
     def _normalized_path(self, project_id: str) -> Path:
         return self.config.data_dir / "projects" / project_id / "original" / "source_normalized.wav"
@@ -504,7 +504,7 @@ class Pipeline:
             (faithful.english_faithful, json.dumps(faithful.entities), json.dumps(faithful.numbers), utc_now(), segment_id),
         )
 
-        narration_text, style, lines, lines_ok, _ = self._adapt_lines(ai, job, project, segment, faithful.english_faithful, previous_context)
+        narration_text, style, lines, lines_ok = self._adapt_lines(ai, job, project, segment, faithful.english_faithful, previous_context)
         self.db.execute(
             "UPDATE segments SET narration_en=?, style_json=?, lines_json=?, status='adapted', updated_at=? WHERE id=?",
             (narration_text, json.dumps(style), json.dumps(lines), utc_now(), segment_id),
@@ -663,12 +663,14 @@ class Pipeline:
                 )
                 stage = "adaptation"
             if stage == "adaptation":
-                narration_text, style, lines, lines_ok, _ = self._adapt_lines(ai, job, project, segment, faithful_text, previous_narration)
+                narration_text, style, lines, lines_ok = self._adapt_lines(ai, job, project, segment, faithful_text, previous_narration)
                 self.db.execute(
                     "UPDATE segments SET narration_en=?, style_json=?, lines_json=? WHERE id=?",
                     (narration_text, json.dumps(style), json.dumps(lines), segment_id),
                 )
                 stage = "tts"
+            if stage == "tts" and not config.get("voice_stage", self.config.voice_stage):
+                stage = "qa"  # a text-only job is never voiced, whatever the button asked for
             if stage == "tts":
                 revoiced = True
                 revision = segment["revision"] + 1
@@ -787,6 +789,15 @@ class Pipeline:
         self.db.execute(
             "UPDATE segments SET qa_json=?, qa_status='passed', status='approved', updated_at=? WHERE id=?",
             (json.dumps(qa), utc_now(), segment_id),
+        )
+
+    def edit_script(self, segment_id: str, text: str) -> None:
+        """Store a reviewer's script and carry it onto the segment's lines, so the export voices the edit."""
+        segment = self.db.one("SELECT lines_json FROM segments WHERE id=?", (segment_id,))
+        lines = breaks.relines((segment or {}).get("lines") or [], text, recordings.COVERAGE_MIN)
+        self.db.execute(
+            "UPDATE segments SET narration_en=?, lines_json=?, status='edited', qa_status='pending', revision=revision+1, updated_at=? WHERE id=?",
+            (text, json.dumps(lines or []), utc_now(), segment_id),
         )
 
     def export_script_parts(self, project_id: str, job_id: str | None = None) -> dict[str, str]:

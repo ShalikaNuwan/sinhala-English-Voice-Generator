@@ -149,3 +149,16 @@ def test_attach_breaks_caps_every_break_when_the_phrases_are_thin():
     assert [line["gap_after_ms"] for line in capped] == [2500, 600]  # the measured silence is kept as it was
     assert [line["break_s"] for line in capped] == [1.0, 0.6]
     assert [line["break_s"] for line in breaks.attach_breaks(lines, run_list)] == [2.5, 0.6]
+
+
+def test_relines_carries_edited_paragraphs_onto_the_lines_or_gives_up():
+    lines = [
+        {"text": "One.", "runs": [1], "start_ms": 0, "end_ms": 1000, "gap_after_ms": 2500, "break_s": 2.5, "coverage": 0.5},
+        {"text": "Two", "runs": [2], "start_ms": 3500, "end_ms": 5000, "gap_after_ms": 100, "break_s": None, "coverage": 0.5},
+    ]
+    edited = breaks.relines(lines, "First!\n\nSecond.", 0.85)
+    assert [l["text"] for l in edited] == ["First!", "Second."]
+    assert [l["break_s"] for l in edited] == [1.0, 0.4]  # thin coverage keeps the 1.0 s cap; a new sentence end earns 0.4
+    assert [l["runs"] for l in edited] == [[1], [2]]
+    assert breaks.relines(lines, "Only one paragraph now.", 0.85) is None
+    assert breaks.relines([], "Anything.", 0.85) is None

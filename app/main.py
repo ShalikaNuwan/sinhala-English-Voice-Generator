@@ -201,10 +201,7 @@ def update_transcript(segment_id: str, payload: TextUpdate) -> dict:
 @app.patch("/api/segments/{segment_id}/script")
 def update_script(segment_id: str, payload: TextUpdate) -> dict:
     require_segment(segment_id)
-    db.execute(
-        "UPDATE segments SET narration_en=?, status='edited', qa_status='pending', revision=revision+1, updated_at=? WHERE id=?",
-        (payload.text, utc_now(), segment_id),
-    )
+    pipeline.edit_script(segment_id, payload.text)
     return present_segment(require_segment(segment_id))
 
 

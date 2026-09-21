@@ -229,7 +229,9 @@ function bindSegment(card) {
   }, {label:"Saving…"}));
 
   card.querySelector(".regen")?.addEventListener("click", (event) => run(event.currentTarget, async () => {
-    await request(`/api/segments/${id}/regenerate`, jsonOptions("POST", {stage:"tts"}));
+    // A text-only segment has no audio; the only thing to redo there is the adaptation.
+    const stage = card.querySelector("audio") ? "tts" : "adaptation";
+    await request(`/api/segments/${id}/regenerate`, jsonOptions("POST", {stage}));
     await waitForSegment(id);
     await after();
   }, {label:"Regenerating…"}));
