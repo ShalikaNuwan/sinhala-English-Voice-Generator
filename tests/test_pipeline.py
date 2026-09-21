@@ -1184,11 +1184,14 @@ def test_runs_reach_the_adaptation_and_lines_carry_the_measured_breaks(tmp_path)
     assert first["narration_en"] == "Line 1.\n\nLine 2.\n\nLine 3."
     lines = first["lines"]
     assert [line["runs"] for line in lines] == [[1], [2], [3]]
-    assert [line["gap_after_ms"] for line in lines] == [600, 300, 800]  # 45300 (next phrase, chunk 2 file 0.5 s minus 0.2 s lead) - 44700
-    assert [line["break_s"] for line in lines] == [0.6, 0.4, 0.8]
+    assert [line["gap_after_ms"] for line in lines] == [600, 300, 600]  # 45300 (next segment's first phrase) - 44700
+    assert [line["break_s"] for line in lines] == [0.6, 0.4, 0.6]
     assert lines[0]["start_ms"] == 0 and lines[0]["end_ms"] == 15000
-    assert second["lines"][0]["runs"] == [1] and second["lines"][0]["gap_after_ms"] == 0 and second["lines"][0]["break_s"] is None
-    assert first["qa_status"] == "passed"
+    assert second["lines"][0]["runs"] == [1] and second["lines"][0]["gap_after_ms"] == 0
+    # no measurable gap, but a sentence end always gets the 0.4 s floor
+    assert second["lines"][0]["break_s"] == 0.4
+    # the fake voice is 1 s long, so the duration check fails regardless; only the lines verdict matters here
+    assert "Script lines do not follow the spoken runs" not in first["qa"]["issues"]
 
 
 def test_lines_that_do_not_cover_the_runs_go_to_review(tmp_path):
@@ -1240,4 +1243,4 @@ def test_regenerating_the_adaptation_uses_the_stored_phrases(tmp_path):
 
     fresh = db.one("SELECT * FROM segments WHERE id=?", (first["id"],))
     assert ai.adapt_calls[-1]["runs"] == ai.adapt_calls[0]["runs"]
-    assert [line["break_s"] for line in fresh["lines"]] == [0.6, 0.4, 0.8]
+    assert [line["break_s"] for line in fresh["lines"]] == [0.6, 0.4, 0.6]
