@@ -16,7 +16,7 @@ class Settings:
     database_path: Path | None = None
     openai_api_key: str | None = field(default_factory=lambda: os.getenv("OPENAI_API_KEY"))
     stt_model: str = field(default_factory=lambda: os.getenv("STT_MODEL", "gpt-transcribe"))
-    text_model: str = field(default_factory=lambda: os.getenv("TEXT_MODEL", "gpt-5.6-terra"))
+    text_model: str = field(default_factory=lambda: os.getenv("TEXT_MODEL", "gpt-6-sol"))
     qa_model: str = field(default_factory=lambda: os.getenv("QA_MODEL", "gpt-5.6-terra"))
     tts_model: str = field(default_factory=lambda: os.getenv("TTS_MODEL", "gpt-4o-mini-tts"))
     tts_voice: str = field(default_factory=lambda: os.getenv("TTS_VOICE", "cedar"))

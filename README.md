@@ -59,7 +59,7 @@ All model names are environment variables so deployment is not tied to a changin
 | Variable | Default |
 |---|---|
 | `STT_MODEL` | `gpt-transcribe` |
-| `TEXT_MODEL` | `gpt-5.6-terra` |
+| `TEXT_MODEL` | `gpt-6-sol` |
 | `QA_MODEL` | `gpt-5.6-terra` |
 | `TTS_MODEL` | `gpt-4o-mini-tts` |
 | `TTS_VOICE` | `cedar` |
