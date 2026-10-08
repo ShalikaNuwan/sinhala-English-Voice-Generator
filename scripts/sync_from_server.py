@@ -93,10 +93,11 @@ def main() -> None:
         # the server, and the local copy must follow or the export would voice the old lines.
         if "lines" in segment:
             remote_lines = json.dumps(segment.get("lines") or [])
-            if json.loads(remote_lines) != json.loads(local.get("lines_json") or "[]"):
+            # Database rows come back decoded: the lines_json column is read as `lines`.
+            if json.loads(remote_lines) != (local.get("lines") or []):
                 updates.append("lines_json=?"); values.append(remote_lines); changed["lines_json"] += 1
         remote_style = json.dumps(segment.get("style") or {}, sort_keys=True)
-        if remote_style != json.dumps(json.loads(local.get("style_json") or "{}"), sort_keys=True):
+        if remote_style != json.dumps(local.get("style") or {}, sort_keys=True):
             updates.append("style_json=?"); values.append(remote_style); changed["style_json"] += 1
         if segment.get("status") and segment["status"] != local.get("status"):
             updates.append("status=?"); values.append(segment["status"]); changed["status"] += 1
