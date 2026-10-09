@@ -13,17 +13,6 @@ from .direction import build_instructions, speaking_speed
 from .recordings import NARRATOR
 from .schemas import FaithfulTranslation, NarrationAdaptation, QAEvaluation
 
-# The teller the script is written for when a project sets no narrator profile of its own.
-STORYTELLER_PROFILE = {
-    "persona": (
-        "A composed true-crime documentary narrator telling the story of a real case to one listener, "
-        "late at night. Intimate, steady and plain-spoken; never breathless, never bookish. Lets the "
-        "facts carry the dread and trusts the listener to feel it."
-    ),
-    "style": "spoken beats, one idea per sentence, natural English idiom, names and numbers said carefully",
-    "avoid": "translation-ese, filler transitions, instructions to the audience, invented drama",
-}
-
 
 PROMPT_VERSION = "2026-09-mvp3"
 
@@ -217,11 +206,7 @@ class AIClient:
                         "You are a bilingual Sinhala-English translation specialist. Translate the supplied "
                         "Sinhala narration into accurate English. Preserve every factual claim, name, date, "
                         "number, place, uncertainty, and causal relationship. Do not add context and do not "
-                        "optimize for dramatic style. Names of real people and places in the narration are "
-                        "English names written phonetically in Sinhala: recover the standard English spelling "
-                        "when the case, the glossary or the previous context identifies the person or place "
-                        "(for example a Sinhala rendering of Byers), and list any name you are not sure of in "
-                        "uncertain_spans rather than inventing a spelling."
+                        "optimize for dramatic style."
                     ),
                 },
                 {
@@ -252,9 +237,8 @@ class AIClient:
                 "Previous narration, for context only. Use it to know where you are in the story; "
                 f"do not repeat it and do not rewrite it:\n<<<\n{previous_narration}\n>>>\n"
             )
-        profile = narrator_profile or STORYTELLER_PROFILE
         user_content = (
-            f"Narrator profile: {profile}\n"
+            f"Narrator profile: {narrator_profile}\n"
             f"{context}"
             f"Faithful English to adapt:\n<<<\n{faithful_en}\n>>>"
         )
@@ -262,24 +246,10 @@ class AIClient:
             numbered = "\n".join(f"{number}. {text}" for number, text in enumerate(runs, start=1))
             user_content += f"\nSpoken runs, numbered, in order:\n{numbered}"
         system = (
-            "You turn faithful English into the script a storyteller speaks aloud as the voice-over of a "
-            "true-crime documentary. The faithful text gives you the facts; you give them a teller. "
-            "Retell, do not transliterate: say what the Sinhala narrator meant the way a fluent English "
-            "storyteller would say it to one listener, with the sentence shapes, idioms and word order of "
-            "spoken English, never the Sinhala sentence built word by word in English. Write for the ear, "
-            "not the page:\n"
-            "- Short sentences, one idea each, in spoken beats. Use contractions. Avoid formal written-English "
-            "constructions, and avoid phrases that only exist in translation (say 'the cash register', not "
-            "'the cashier counter'; 'she was seventeen', not 'her age was seventeen').\n"
-            "- When the narrator speaks to the audience, render the intent in natural English, not the words: "
-            "an invitation to settle down and listen becomes something like 'Settle in, and listen closely', "
-            "never an instruction such as 'Start listening to the story'.\n"
-            "- Keep reported speech reported; do not turn 'he said that he was late' into a direct quote.\n"
-            "- No filler transitions the narrator did not build ('Anyway', 'So,' 'Well,'), no summarising, "
-            "no editorialising, no added drama. The tension comes from the facts and their order.\n"
-            "- Say it the way the story is told in English true-crime: name the person rather than 'this "
-            "boy', keep the running names the narrator uses ('Rob'), and keep each fact on the beat where "
-            "the narrator placed it.\n"
+            "You turn faithful English into a script that a storyteller will speak aloud as the "
+            "voice-over of a true-crime documentary. Write for the ear, not the page:\n"
+            "- Short sentences, one idea each. Use contractions. Avoid formal written-English "
+            "constructions.\n"
             "- Put an ellipsis (…) where the narrator should hold a beat, at most once per passage, and a dash "
             "(—) for a change of thought or an afterthought, at most twice. Use the characters … and — "
             "themselves, not ... or --, and only where a person telling the story would actually pause.\n"
@@ -288,9 +258,6 @@ class AIClient:
             "'May 1st, 2010' and '4:51 in the morning'.\n"
             "- Keep quoted speech from 911 calls and witnesses as plain spoken lines.\n"
             "- Collapse incomplete false starts and repetitions the speaker clearly did not intend.\n"
-            "- A sentence the segment boundary cut off is not a cliffhanger: never end it with an ellipsis. "
-            "Fold its words into the sentence before it when they fit; otherwise write only the words that "
-            "are there, as the plain opening of a sentence, and let the next passage finish the thought.\n"
             "Hard limit, which overrides every rule above. Do not add, remove, weaken, or strengthen any "
             "factual claim. Preserve every distinct name, date, number, place, and causal link. If a rule "
             "above would cost you a detail or soften a hedge, break the rule and keep the fact. Preserve "
