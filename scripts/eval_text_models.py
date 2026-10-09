@@ -153,6 +153,9 @@ def main() -> None:
     parser.add_argument("--judge", default="gpt-6-astra")
     parser.add_argument("--passes", type=int, default=2)
     parser.add_argument("--workers", type=int, default=6)
+    parser.add_argument("--tag", default="", help="Suffix added to every candidate label, e.g. 'old' -> gpt-6-sol@old")
+    parser.add_argument("--generate-only", action="store_true", help="Write the outputs and stop before judging")
+    parser.add_argument("--also", default="", help="results.json of an earlier run whose outputs join this judging")
     args = parser.parse_args()
     models = [m.strip() for m in args.models.split(",") if m.strip()]
 
@@ -176,14 +179,22 @@ def main() -> None:
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         for (model, seg), result in zip(tasks, pool.map(lambda t: _safe(run_candidate, ai, t[0], t[1], project), tasks)):
             if isinstance(result, dict):
+                if args.tag:
+                    result["model"] = f"{result['model']}@{args.tag}"
                 outputs.append(result)
                 print(f"  done {model} segment {seg['segment_index']} in {result['seconds']}s", flush=True)
             else:
                 failures.append(f"{model} segment {seg['segment_index']}: {result}")
                 print(f"  FAILED {model} segment {seg['segment_index']}: {result}", flush=True)
 
+    labels = sorted({o["model"] for o in outputs})
+    if args.also:
+        earlier = json.loads(Path(args.also).read_text(encoding="utf-8"))
+        outputs += [o for o in earlier["outputs"] if o["segment_index"] in {s["segment_index"] for s in segments}]
+        usage += earlier.get("usage", [])
+        labels = sorted({o["model"] for o in outputs})
     judgements: list[dict] = []
-    for seg in segments:
+    for seg in segments if not args.generate_only else []:
         mine = [o for o in outputs if o["segment_index"] == seg["segment_index"]]
         if len(mine) < 2:
             continue
@@ -195,11 +206,11 @@ def main() -> None:
                 failures.append(f"judge segment {seg['segment_index']} pass {pass_number + 1}: {exc}")
 
     (out_dir / "results.json").write_text(json.dumps({
-        "project": args.project_id, "models": models, "judge": args.judge,
+        "project": args.project_id, "models": labels, "judge": args.judge,
         "segments": [s["segment_index"] for s in segments], "outputs": outputs,
         "judgements": judgements, "usage": usage, "failures": failures,
     }, ensure_ascii=False, indent=1), encoding="utf-8")
-    (out_dir / "report.md").write_text(report(models, args.judge, segments, outputs, judgements, usage, failures), encoding="utf-8")
+    (out_dir / "report.md").write_text(report(labels, args.judge, segments, outputs, judgements, usage, failures), encoding="utf-8")
     print(f"\nwritten to {out_dir}")
     print((out_dir / "report.md").read_text(encoding="utf-8"))
 
@@ -219,7 +230,7 @@ def report(models, judge_model, segments, outputs, judgements, usage, failures) 
         firsts = sum(1 for j in judgements if j["ranking"] and j["ranking"][0] == model)
         mine = [o for o in outputs if o["model"] == model]
         follow = sum(1 for o in mine if o["lines_follow_runs"])
-        used = [u for u in usage if u["model"] == model]
+        used = [u for u in usage if u["model"] == model.split("@")[0]]
         per_seg = max(1, len(mine))
         acc = statistics.mean(s["accuracy"] for s in scores) if scores else float("nan")
         sto = statistics.mean(s["story"] for s in scores) if scores else float("nan")
