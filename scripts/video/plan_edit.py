@@ -34,6 +34,11 @@ from plan_shots import (  # noqa: E402
 
 BATCH = 12
 CONTEXT_SHOTS = 3
+SENTENCE_BATCH = 30       # sentences planned per model call in beat mode
+SENTENCE_CONTEXT = 6      # sentences of story shown before and after a batch
+BEAT_MAX_S = 20.0         # a beat longer than this splits at the sentence nearest its middle
+BEAT_MIN_S = 3.0          # a beat shorter than this joins the one before it
+FREE_LICENCE = re.compile(r"public domain|\bpdm\b|cc0|no restrictions", re.I)
 REUSE_WINDOW = 12         # shots before the same picture may come back
 MINUTES_PER_USE = 12.0    # a picture may appear once per this many minutes of film (and at least 4 times)
 COLOUR_TARGET = 0.60      # the share of photographs in colour the cut leans toward
@@ -95,6 +100,16 @@ class PlannedShot(BaseModel):
 
 class PlannedBatch(BaseModel):
     shots: list[PlannedShot]
+
+
+class PlannedBeat(PlannedShot):
+    index: int = Field(default=0, description="Leave 0.")
+    first: int = Field(description="The first sentence number of this beat.")
+    last: int = Field(description="The last sentence number of this beat (the same as first for one sentence).")
+
+
+class PlannedBeats(BaseModel):
+    beats: list[PlannedBeat]
 
 
 SYSTEM = """You are the editor of a true-crime documentary about a real case. The narration is cut
@@ -173,6 +188,35 @@ Return exactly one entry per shot you were asked to plan, with the index copied 
 
 
 # ---------- the catalogue the model chooses from ----------
+
+BEAT_RULES = """The narration is given as numbered sentences, each with its length in seconds. Group
+consecutive sentences into beats, then choose what runs under each beat.
+
+Beats:
+- A beat is the run of consecutive sentences about one thing: one person, one place, one object,
+  one moment. One picture or clip runs under the whole beat, so the picture changes when the
+  narration turns to something else, not on a clock.
+- Read the sentences before and after the ones you plan, to see where an idea starts and ends.
+- Never split a sentence. A beat is usually 5 to 15 seconds and never longer than 20. A single short
+  sentence is its own beat only when it lands hard.
+- Cover every sentence you were asked to plan exactly once, in order. `first` and `last` are the
+  sentence numbers a beat spans.
+"""
+BEAT_SYSTEM = SYSTEM.replace(
+    "The narration is cut\ninto numbered shots. For each shot you choose the real photograph that runs under those words, from\nthe picture library given below.",
+    "You choose the real\nphotographs and footage that run under the narration, from the picture library given below.",
+).replace(
+    "Return exactly one entry per shot you were asked to plan, with the index copied exactly.",
+    "Return the beats covering every sentence you were asked to plan.",
+) + "\n\n" + BEAT_RULES
+
+
+def free_to_use(item: dict) -> bool:
+    """Public domain, CC0, or made for this film: nothing that needs a credit or carries a claim."""
+    if item.get("rights") in ("generated", "original"):
+        return True
+    return item.get("rights") == "free" and bool(FREE_LICENCE.search(item.get("licence") or ""))
+
 
 def usable(item: dict) -> bool:
     """Pictures a viewer may see: captioned, not graphic, not rejected by a verifier, and on disk."""
@@ -646,6 +690,117 @@ def plan_batch(client, model: str, cat: str, batch: list[dict], before: list[dic
     return response.output_parsed.shots
 
 
+def plan_beats(client, model: str, cat: str, batch: list[dict], before: list[dict], after: list[dict]) -> list[PlannedBeat]:
+    def lines(items, label):
+        if not items:
+            return ""
+        return f"{label}:\n" + "\n".join(f"  ({s['index']}) {s['text']}" for s in items) + "\n\n"
+
+    user = (
+        "Picture library (id | kind colour era quality | people | places | what it shows):\n"
+        f"{cat}\n\n"
+        + lines(before, "Story just before (context only, do not plan these)")
+        + "Plan these sentences:\n"
+        + "\n".join(f"  ({s['index']}) [{s['end'] - s['start']:.1f}s] {s['text']}" for s in batch)
+        + "\n\n"
+        + lines(after, "Story just after (context only, do not plan these)")
+    )
+    response = client.responses.parse(
+        model=model,
+        input=[{"role": "system", "content": BEAT_SYSTEM}, {"role": "user", "content": user}],
+        text_format=PlannedBeats,
+    )
+    return response.output_parsed.beats
+
+
+def repair_beats(beats: list, first: int, last: int) -> list[tuple[int, int, object]]:
+    """Make a batch's beats cover first..last exactly once, contiguous and in order."""
+    ordered = sorted((b for b in beats if b.last >= first and b.first <= last), key=lambda b: (b.first, b.last))
+    spans: list[tuple[int, int, object]] = []
+    cursor = first
+    for beat in ordered:
+        start, end = max(beat.first, cursor), min(beat.last, last)
+        if end < start:
+            continue
+        if start > cursor and spans:  # a gap: the beat before runs on over it
+            prev_start, _, prev_beat = spans[-1]
+            spans[-1] = (prev_start, start - 1, prev_beat)
+        elif start > cursor:
+            start = cursor
+        spans.append((start, end, beat))
+        cursor = end + 1
+    if not spans:
+        return [(first, last, None)]
+    if cursor <= last:
+        spans[-1] = (spans[-1][0], last, spans[-1][2])
+    return spans
+
+
+DEVICE_KINDS = {"profile", "exhibit", "highlight", "board", "map"}
+
+
+def shape_beats(spans: list[tuple[int, int, object]], sentences: list[dict]) -> list[tuple[int, int, object, int]]:
+    """Split beats over BEAT_MAX_S at the sentence nearest their middle, and fold short ones back.
+
+    Returns (first, last, plan, part) where part counts the pieces of a split beat from 0: a later
+    piece takes the beat's next picture choice rather than repeating the first.
+    """
+    def length(a, b):
+        return sentences[b]["end"] - sentences[a]["start"]
+
+    out: list[tuple[int, int, object, int]] = []
+    for first, last, plan in spans:
+        stack, pieces = [(first, last)], []
+        while stack:
+            a, b = stack.pop(0)
+            if length(a, b) <= BEAT_MAX_S or a == b:
+                pieces.append((a, b))
+                continue
+            middle = sentences[a]["start"] + length(a, b) / 2
+            cut = min(range(a + 1, b + 1), key=lambda k: abs(sentences[k]["start"] - middle))
+            stack[:0] = [(a, cut - 1), (cut, b)]
+        out += [(a, b, plan, n) for n, (a, b) in enumerate(pieces)]
+    merged: list[tuple[int, int, object, int]] = []
+    for item in out:
+        a, b = item[0], item[1]
+        if merged and length(a, b) < BEAT_MIN_S and length(merged[-1][0], b) <= BEAT_MAX_S + BEAT_MIN_S:
+            pa, _, pplan, ppart = merged[-1]
+            merged[-1] = (pa, b, pplan, ppart)
+        else:
+            merged.append(item)
+    return merged
+
+
+def beat_entry(index: int, first: int, last: int, plan, part: int, sentences: list[dict]) -> dict:
+    """A shot-list entry for a beat; a later piece of a split beat runs the next picture choice."""
+    shot = {"index": index, "start": sentences[first]["start"], "end": sentences[last]["end"],
+            "narration": " ".join(s["text"] for s in sentences[first:last + 1]), "sentences": [first, last]}
+    entry = to_contract(shot, plan)
+    if part:
+        choices = entry.get("choices") or []
+        if entry["kind"] in DEVICE_KINDS and entry.get("subject_id"):
+            choices = [entry["subject_id"]] + choices
+        entry.update({"kind": "archival" if entry["kind"] in DEVICE_KINDS else entry["kind"],
+                      "kind_planned": "archival" if entry["kind"] in DEVICE_KINDS else entry["kind"],
+                      "choices": choices[part:] + choices[:part], "overlay": None, "overlay_planned": None})
+    return entry
+
+
+def land_on_effects(entries: list[dict], events: list[dict], whoosh_s: float = 1.2, reach_s: float = 1.5) -> int:
+    """The audio already carries a whoosh into each old dip to black: dip to black on the cut nearest it."""
+    starts = [e["start"] for e in entries]
+    landed = 0
+    for event in events:
+        if event.get("kind") != "whoosh":
+            continue
+        cut = float(event["t"]) + whoosh_s
+        nearest = min(range(len(starts)), key=lambda k: abs(starts[k] - cut))
+        if nearest and abs(starts[nearest] - cut) <= reach_s:
+            entries[nearest]["transition_in"] = "black"
+            landed += 1
+    return landed
+
+
 def to_contract(shot: dict, planned: PlannedShot | None) -> dict:
     entry = {
         "index": shot["index"], "start": shot["start"], "end": shot["end"], "narration": shot["narration"],
@@ -742,6 +897,54 @@ def readable(shots: list[dict], library: dict[str, dict], duration: float) -> st
     return "\n".join(out) + "\n"
 
 
+def plan_by_beats(args, video_dir: Path, library: dict[str, dict], cat: str) -> None:
+    """Group sentences into beats with the model, one picture or clip per beat, then the code rules."""
+    from openai import OpenAI
+
+    sentences = json.loads((video_dir / "sentences.json").read_text(encoding="utf-8"))
+    duration = sentences[-1]["end"]
+    client = OpenAI(api_key=settings.openai_api_key)
+    batches = [sentences[i:i + SENTENCE_BATCH] for i in range(0, len(sentences), SENTENCE_BATCH)]
+    if args.shots:
+        batches = batches[:max(1, -(-args.shots // SENTENCE_BATCH))]
+    print(f"{len(sentences)} sentences in {len(batches)} batches; planning beats with {args.model}")
+
+    def one(batch: list[dict]):
+        a, b = batch[0]["index"], batch[-1]["index"]
+        before = sentences[max(0, a - SENTENCE_CONTEXT):a]
+        after = sentences[b + 1:b + 1 + SENTENCE_CONTEXT]
+        for attempt in range(3):
+            try:
+                planned = plan_beats(client, args.model, cat, batch, before, after)
+                print(f"  planned sentences {a}-{b}: {len(planned)} beats", flush=True)
+                return repair_beats(planned, a, b)
+            except Exception as exc:  # noqa: BLE001 - a batch may fail; its sentences still get beats
+                if attempt == 2:
+                    print(f"  FAILED sentences {a}-{b}: {str(exc)[:160]}", flush=True)
+        return [(a, b, None)]
+
+    with ThreadPoolExecutor(max_workers=args.workers) as pool:
+        spans = [span for batch_spans in pool.map(one, batches) for span in batch_spans]
+    shaped = shape_beats(spans, sentences)
+    entries = [beat_entry(n, a, b, plan, part, sentences) for n, (a, b, plan, part) in enumerate(shaped, start=1)]
+    if args.shots:
+        entries = entries[:args.shots]
+    entries[-1]["end"] = round(entries[-1]["end"], 3)
+    if args.events:
+        events = json.loads(Path(args.events).read_text(encoding="utf-8"))
+        print(f"  {land_on_effects(entries, events)} dips to black land on the whooshes already in the audio")
+    finalise(entries, library, duration)
+    (video_dir / "shots.json").write_text(json.dumps({
+        "audio": args.audio, "duration_s": round(duration, 3),
+        "width": 1920, "height": 1080, "fps": 30, "subtitles": "sidecar", "version": 3,
+        "shots": entries,
+    }, ensure_ascii=False, indent=1), encoding="utf-8")
+    (video_dir / "shots.md").write_text(readable(entries, library, duration), encoding="utf-8")
+    lengths = sorted(e["end"] - e["start"] for e in entries)
+    print(f"wrote shots.json and shots.md; {len(entries)} beats, median {lengths[len(lengths) // 2]:.1f}s, "
+          f"longest {lengths[-1]:.1f}s")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("video_dir")
@@ -751,6 +954,11 @@ def main() -> None:
     parser.add_argument("--shots", type=int, default=None, help="plan only the first N shots (preview)")
     parser.add_argument("--repick", action="store_true",
                         help="redo pictures and labels from the saved choices, without calling the model")
+    parser.add_argument("--beats", action="store_true",
+                        help="plan by sentence groups from sentences.json instead of fixed shots")
+    parser.add_argument("--free-only", action="store_true",
+                        help="use only public-domain, CC0, generated and original material")
+    parser.add_argument("--events", default="", help="effects already in the audio (events_mapped.json)")
     args = parser.parse_args()
 
     from openai import OpenAI
@@ -759,11 +967,20 @@ def main() -> None:
     lines = json.loads((video_dir / "lines.json").read_text(encoding="utf-8"))
     items = json.loads((video_dir / "library.json").read_text(encoding="utf-8"))["items"]
     apply_reviews(items, video_dir / "library")
-    library = {item["id"]: item for item in items}
     clips_path = video_dir / "clips.json"
-    clips = clip_entries(json.loads(clips_path.read_text(encoding="utf-8"))["items"]) if clips_path.exists() else {}
+    clip_items = json.loads(clips_path.read_text(encoding="utf-8"))["items"] if clips_path.exists() else []
+    if args.free_only:
+        before = sum(1 for i in items if usable(i))
+        items = [i for i in items if free_to_use(i)]
+        clip_items = [c for c in clip_items if free_to_use(c)]
+        print(f"free-only: {sum(1 for i in items if usable(i))} of {before} pictures kept, {len(clip_items)} clips")
+    library = {item["id"]: item for item in items}
+    clips = clip_entries(clip_items)
     library.update(clips)
     cat = catalogue(items, clips)
+    if args.beats:
+        plan_by_beats(args, video_dir, library, cat)
+        return
     shots = group_into_shots(lines)
     duration = max(line["end"] for line in lines)
     shots[-1]["end"] = round(duration, 2)

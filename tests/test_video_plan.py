@@ -326,3 +326,55 @@ def test_the_board_leaves_out_other_killers_scenery_repeats_and_the_outro():
     plan_edit.insert_boards(shots, library)
     assert [p["label"] for p in shots[5]["pins"]] == ["John Wayne Gacy", "Robert Piest", "Business card"]
     assert shots[6]["kind"] == "archival" and shots[7]["kind"] == "archival"
+
+
+
+class _Beat:
+    def __init__(self, first, last, **extra):
+        self.first, self.last = first, last
+        self.__dict__.update(extra)
+
+
+def _sentences(lengths):
+    out, t = [], 0.0
+    for n, length in enumerate(lengths):
+        out.append({"index": n, "text": f"Sentence {n}.", "start": t, "end": t + length})
+        t += length
+    return out
+
+
+def test_beats_are_repaired_to_cover_every_sentence_once_in_order():
+    beats = [_Beat(3, 5), _Beat(0, 1), _Beat(1, 2), _Beat(7, 9)]   # overlap 1, gap at 6, runs past 8
+    spans = plan_edit.repair_beats(beats, 0, 8)
+    covered = [k for a, b, _ in spans for k in range(a, b + 1)]
+    assert covered == list(range(9))
+    assert [(a, b) for a, b, _ in spans] == [(0, 1), (2, 2), (3, 6), (7, 8)]
+
+
+def test_a_long_beat_splits_at_a_sentence_and_a_tiny_one_folds_back():
+    sentences = _sentences([6, 6, 6, 6, 1.5, 5])
+    shaped = plan_edit.shape_beats([(0, 3, "A"), (4, 4, "B"), (5, 5, "C")], sentences)
+    assert [(a, b, plan, part) for a, b, plan, part in shaped] == [(0, 1, "A", 0), (2, 4, "A", 1), (5, 5, "C", 0)]
+
+
+def test_a_later_piece_of_a_split_beat_runs_the_next_choice_not_the_device_again():
+    sentences = _sentences([6, 6])
+    plan = plan_edit.PlannedBeat(first=0, last=1, kind="profile", subject_id="gacy", choices=["a", "b"])
+    first = plan_edit.beat_entry(1, 0, 0, plan, 0, sentences)
+    second = plan_edit.beat_entry(2, 1, 1, plan, 1, sentences)
+    assert first["kind"] == "profile"
+    assert second["kind"] == "archival" and second["choices"][0] == "a"
+
+
+def test_a_dip_to_black_lands_on_the_cut_nearest_a_baked_in_whoosh():
+    entries = [shot(1, start=0, end=10), shot(2, start=10, end=20), shot(3, start=20, end=30)]
+    landed = plan_edit.land_on_effects(entries, [{"kind": "whoosh", "t": 18.5}, {"kind": "shutter", "t": 5}])
+    assert landed == 1 and entries[2]["transition_in"] == "black" and entries[1]["transition_in"] == "dissolve"
+
+
+def test_free_only_keeps_public_domain_cc0_and_our_own_work():
+    assert plan_edit.free_to_use({"rights": "free", "licence": "Public domain"})
+    assert plan_edit.free_to_use({"rights": "free", "licence": "CC0 1.0"})
+    assert plan_edit.free_to_use({"rights": "original"})
+    assert not plan_edit.free_to_use({"rights": "free", "licence": "CC BY-SA 4.0"})
+    assert not plan_edit.free_to_use({"rights": "fair_use", "licence": "Copyrighted"})
