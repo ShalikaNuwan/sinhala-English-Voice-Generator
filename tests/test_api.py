@@ -224,3 +224,68 @@ def test_job_configuration_shapes_pauses_by_default():
     assert config["align_model"] == "whisper-1"
     assert config["shape_pauses"] is True
     assert job_configuration(ProcessRequest(shape_pauses=False, align_model="w2"), Settings(openai_api_key="unused"))["shape_pauses"] is False
+
+
+def test_job_configuration_voices_by_default_and_can_be_text_only():
+    from app.config import Settings
+    from app.main import job_configuration
+    from app.schemas import ProcessRequest
+
+    assert job_configuration(ProcessRequest(), Settings(openai_api_key="unused"))["voice_stage"] is True
+    assert job_configuration(ProcessRequest(voice_stage=False), Settings(openai_api_key="unused"))["voice_stage"] is False
+
+
+def test_script_parts_endpoint_returns_files_or_a_clear_refusal(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    import app.config
+    import app.main
+
+    importlib.reload(app.config)
+    module = importlib.reload(app.main)
+    from fastapi.testclient import TestClient
+
+    client = TestClient(module.app)
+    project_id = client.post("/api/projects", json={"title": "Parts", "topic": "History"}).json()["id"]
+
+    assert client.post(f"/api/projects/{project_id}/export/parts").status_code == 409
+
+    monkeypatch.setattr(module.pipeline, "export_script_parts", lambda pid: {"01_narration.txt": str(module.settings.data_dir / "projects" / pid / "exports" / "script_parts" / "01_narration.txt")})
+    files = client.post(f"/api/projects/{project_id}/export/parts").json()
+    assert files == {"01_narration.txt": f"/media/projects/{project_id}/exports/script_parts/01_narration.txt"}
+
+
+def test_the_pause_map_defaults_to_the_realtime_voice_detection(tmp_path, monkeypatch):
+    from app.config import Settings
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.delenv("PAUSE_SOURCE", raising=False)
+
+    config = Settings()
+
+    assert config.pause_source == "realtime"
+    assert config.realtime_vad_threshold == 0.8
+    assert config.realtime_vad_silence_ms == 200
+    assert config.turn_transcribe_model == "gpt-4o-transcribe"
+
+
+def test_the_pause_source_can_be_switched_to_the_diarizer_and_nonsense_falls_back(tmp_path, monkeypatch):
+    from app.config import Settings
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+
+    monkeypatch.setenv("PAUSE_SOURCE", " Diarizer ")
+    assert Settings().pause_source == "diarizer"
+
+    monkeypatch.setenv("PAUSE_SOURCE", "whatever")
+    assert Settings().pause_source == "realtime"
+
+
+def test_job_configuration_carries_the_pause_source():
+    from app.config import Settings
+    from app.main import job_configuration
+    from app.schemas import ProcessRequest
+
+    assert job_configuration(ProcessRequest(), Settings(openai_api_key="unused"))["pause_source"] == "realtime"
+    assert job_configuration(
+        ProcessRequest(pause_source="diarizer"), Settings(openai_api_key="unused"),
+    )["pause_source"] == "diarizer"

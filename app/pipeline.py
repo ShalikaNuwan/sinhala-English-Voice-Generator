@@ -8,7 +8,7 @@ import uuid
 from pathlib import Path
 from typing import Callable, TypeVar
 
-from . import pauses, recordings, speaking_profile
+from . import breaks, pauses, recordings, script_parts, speaking_profile, turns
 from .ai import AIClient, PROMPT_VERSION
 from .audio import AudioError, AudioService
 from .config import Settings
@@ -20,6 +20,8 @@ from .schemas import QAEvaluation
 T = TypeVar("T")
 
 CONFIRM_NOTE = "Recorded audio kept as is. Confirm."
+# Stands in for a turn the voice detection timed but the transcription returned empty.
+SPEECH_NOTE = "(speech)"
 ENGLISH_NOTE = "Possible recorded audio (English speech in transcript). Mark as original if so."
 DURATION_RANGE = (0.55, 1.45)
 
@@ -82,6 +84,59 @@ class Pipeline:
         if not isinstance(persona, str) or not persona.strip():
             persona = None
         return persona, config.get("speed", self.config.tts_speed)
+
+    def _next_phrase_start(self, job_id: str, segment_index: int) -> int | None:
+        """Where the narrator next speaks after this segment, if the next segment is narration with phrases."""
+        following = self.db.one(
+            "SELECT kind, start_ms, phrases_json FROM segments WHERE job_id=? AND segment_index=?", (job_id, segment_index + 1),
+        )
+        if not following:
+            return None
+        if following.get("kind") == "original":
+            # The recording piece starts PAD_MS before the recorded voice; the narrator's silence runs up to the voice.
+            return following["start_ms"] + recordings.PAD_MS
+        if following.get("kind") == "narration" and following.get("phrases"):
+            return min(p["start_ms"] for p in following["phrases"])
+        return None
+
+    def _stored_lines_ok(self, job_id: str, segment: dict) -> bool:
+        """Whether the segment's stored lines still cover its spoken runs (True when it has neither)."""
+        run_list = breaks.runs(segment.get("phrases") or [], segment["end_ms"], self._next_phrase_start(job_id, segment["segment_index"]))
+        if not run_list:
+            return True
+        return bool(segment.get("lines")) and breaks.covers_runs(segment["lines"], len(run_list))
+
+    def _adapt_lines(self, ai: AIClient, job: dict, project: dict, segment: dict, faithful_text: str, previous_narration: str):
+        """Adapt a segment as lines over its spoken runs; fall back to a passage when it has no phrases.
+
+        Returns (narration_text, style, lines, lines_ok).
+        """
+        config = job["config"]
+        phrases = segment.get("phrases") or []
+        run_list = breaks.runs(phrases, segment["end_ms"], self._next_phrase_start(job["id"], segment["segment_index"])) if phrases else []
+        if not run_list and config.get("detect_recordings", self.config.detect_recordings):
+            self._warn(job["id"], f"No spoken phrases for segment {segment['segment_index']}; its breaks will use defaults")
+        # Silence the diarizer never explained is not a measured pause; cap what it would write.
+        cov = breaks.coverage(phrases, segment["start_ms"], segment["end_ms"]) if phrases else 1.0
+        cap_ms = breaks.BREAK_MAX_MS
+        if cov < recordings.COVERAGE_MIN:
+            cap_ms = breaks.GUARDED_MAX_MS
+            self._warn(job["id"], f"Phrases cover {cov:.0%} of segment {segment['segment_index']}; breaks over 1.0 s capped")
+        run_texts = [run["text"] for run in run_list] or None
+        adaptation = self._tracked_call(
+            job["id"], segment["id"], "adaptation", config["text_model"], faithful_text,
+            lambda: ai.adapt(faithful_text, config["text_model"], project["narrator_profile"] or {}, previous_narration[-600:], runs=run_texts),
+        )
+        style = adaptation.model_dump(exclude={"narration_text", "lines"})
+        raw_lines = [line.model_dump() for line in adaptation.lines]
+        lines_ok = True
+        lines: list[dict] = []
+        if run_list:
+            lines_ok = bool(raw_lines) and breaks.covers_runs(raw_lines, len(run_list))
+            lines = breaks.attach_breaks(raw_lines, run_list, cap_ms=cap_ms)
+            lines = [dict(line, coverage=round(cov, 2)) for line in lines]
+        narration_text = "\n\n".join(line["text"] for line in lines) if lines else adaptation.narration_text
+        return narration_text, style, lines, lines_ok
 
     def _normalized_path(self, project_id: str) -> Path:
         return self.config.data_dir / "projects" / project_id / "original" / "source_normalized.wav"
@@ -190,6 +245,89 @@ class Pipeline:
             self._warn(job_id, f"Recording detection unavailable: {str(exc)[:200]}")
             return None
 
+    def _diarize_chunk(
+        self, job_id: str, ai: AIClient, model: str, chunk_index: int,
+        chunk_start: int, chunk_end: int, chunk_path: Path, reference: Path,
+    ) -> tuple[list[dict], list[recordings.Piece]]:
+        """Diarize a chunk twice, three times while the narrator stays thinly covered, and cut it.
+
+        One diarization call drops spans another returns, and a dropped span becomes a false long
+        break. The first pass stays the base for recording detection and clip transcripts; a later
+        pass only fills stretches it never heard. A failed extra pass is a warning, not a failure.
+        """
+        lead_s = self.audio.chunk_lead_ms(chunk_start) / 1000
+
+        def hear() -> list[dict]:
+            spans = self._tracked_call(
+                job_id, None, "diarization", model, str(chunk_path),
+                lambda: ai.diarize(chunk_path, model, reference),
+            )
+            # The chunk file starts CHUNK_PAD_MS before the planned chunk; diarizer times are file-relative.
+            return [dict(item, start=float(item["start"]) - lead_s, end=float(item["end"]) - lead_s) for item in spans]
+
+        def cut(spans: list[dict]) -> list[recordings.Piece]:
+            originals = recordings.original_spans(spans, chunk_end - chunk_start)
+            return recordings.cut_plan(chunk_start, chunk_end, originals, recordings.narration_spans(spans))
+
+        spans = hear()
+        pieces = cut(spans)
+        for label in ("Second", "Third"):
+            try:
+                spans = recordings.fill_gaps(spans, hear())
+            except Exception as exc:  # noqa: BLE001 - an extra pass is an improvement, never a chunk failure
+                traceback.print_exc()
+                self._warn(job_id, f"{label} diarizer pass failed on chunk {chunk_index}: {str(exc)[:200]}")
+                break
+            pieces = cut(spans)
+            # The cut is in absolute source ms; coverage is measured against the chunk-relative spans.
+            relative = [(start - chunk_start, end - chunk_start, kind) for start, end, kind in pieces]
+            if recordings.narrator_coverage(spans, relative) >= recordings.COVERAGE_MIN:
+                break
+        return spans, pieces
+
+    def _pause_map(
+        self, job_id: str, segment_id: str, ai: AIClient, config: dict, index: int,
+        source_path: Path, offset_ms: int, start_ms: int, end_ms: int,
+    ) -> list[dict] | None:
+        """A narration piece's phrases as the Realtime voice detection heard them, or None on failure.
+
+        The session hears the piece's own audio, so its turn times are file-relative; `offset_ms`
+        puts them back in source time. The PCM copy exists only for the length of the session.
+        """
+        model = config.get("turn_transcribe_model", self.config.turn_transcribe_model)
+        threshold = config.get("realtime_vad_threshold", self.config.realtime_vad_threshold)
+        silence_ms = config.get("realtime_vad_silence_ms", self.config.realtime_vad_silence_ms)
+        pcm = source_path.with_suffix(".pcm")
+        try:
+            duration_ms = self.audio.to_pcm(source_path, pcm)
+            heard = self._tracked_call(
+                job_id, segment_id, "pause_map", model, str(source_path),
+                lambda: ai.speech_turns(pcm, duration_ms, threshold, silence_ms, model),
+            )
+        except Exception as exc:  # noqa: BLE001 - the diarizer's narrator spans remain the fallback
+            traceback.print_exc()
+            self._warn(job_id, f"Pause map unavailable for segment {index}: {str(exc)[:200]}")
+            return None
+        finally:
+            pcm.unlink(missing_ok=True)
+        phrases = [
+            {
+                "start_ms": max(start_ms, offset_ms + turn["start_ms"]),
+                "end_ms": min(end_ms, offset_ms + turn["end_ms"]),
+                "text": (turn.get("text") or "").strip(),
+            }
+            for turn in heard
+            if offset_ms + turn["end_ms"] > start_ms and offset_ms + turn["start_ms"] < end_ms
+        ]
+        phrases = turns.drop_edge_fragments(sorted(phrases, key=lambda item: item["start_ms"]), start_ms, end_ms)
+        if not phrases:
+            self._warn(job_id, f"Pause map heard no speech in segment {index}; the diarizer's phrases stand")
+            return None
+        if phrases and not any(phrase["text"] for phrase in phrases):
+            # Nothing came back transcribed, but the silences are measured all the same: keep the map.
+            phrases = [dict(phrase, text=SPEECH_NOTE) for phrase in phrases]
+        return phrases
+
     def _create_segments(
         self,
         job_id: str,
@@ -202,7 +340,9 @@ class Pipeline:
         """One row per piece: narration to be voiced, or a recording kept from the source."""
         self.db.execute("DELETE FROM segments WHERE job_id=?", (job_id,))
         model = config.get("diarize_model", self.config.diarize_model)
-        ai = self._ai() if reference is not None else None
+        pause_source = config.get("pause_source", self.config.pause_source)
+        # Detection needs the narrator reference; the pause map only needs the audio.
+        ai = self._ai() if reference is not None or pause_source == "realtime" else None
         generated = self._generated_dir(project["id"], job_id)
         segment_ids: list[str] = []
         index = 0
@@ -211,15 +351,9 @@ class Pipeline:
             pieces: list[recordings.Piece] = [(chunk_start, chunk_end, "narration")]
             if reference is not None:
                 try:
-                    spans = self._tracked_call(
-                        job_id, None, "diarization", model, str(chunk_path),
-                        lambda: ai.diarize(chunk_path, model, reference),
+                    spans, pieces = self._diarize_chunk(
+                        job_id, ai, model, chunk_index, chunk_start, chunk_end, chunk_path, reference,
                     )
-                    # The chunk file starts CHUNK_PAD_MS before the planned chunk; diarizer times are file-relative.
-                    lead_s = self.audio.chunk_lead_ms(chunk_start) / 1000
-                    spans = [dict(item, start=float(item["start"]) - lead_s, end=float(item["end"]) - lead_s) for item in spans]
-                    originals = recordings.original_spans(spans, chunk_end - chunk_start)
-                    pieces = recordings.cut_plan(chunk_start, chunk_end, originals, recordings.narration_spans(spans))
                 except Exception as exc:  # noqa: BLE001 - one chunk's detection must not fail the job
                     traceback.print_exc()
                     self._warn(job_id, f"Recording detection failed on chunk {chunk_index}: {str(exc)[:200]}")
@@ -244,10 +378,27 @@ class Pipeline:
                 if (start_ms, end_ms) != (chunk_start, chunk_end):
                     source_path = chunk_path.parent / f"{index:04d}_piece.wav"
                     self.audio.extract(normalized, start_ms, end_ms, source_path, pad_ms=0)
+                phrases = [
+                    {
+                        "start_ms": max(start_ms, chunk_start + round(float(item["start"]) * 1000)),
+                        "end_ms": min(end_ms, chunk_start + round(float(item["end"]) * 1000)),
+                        "text": (item.get("text") or "").strip(),
+                    }
+                    for item in spans
+                    if recordings.is_narrator_speech(item)
+                    and chunk_start + round(float(item["end"]) * 1000) > start_ms
+                    and chunk_start + round(float(item["start"]) * 1000) < end_ms
+                ]
+                if pause_source == "realtime":
+                    # A piece file starts at the piece; the chunk file starts a lead before its chunk.
+                    offset = start_ms if source_path != chunk_path else chunk_start - self.audio.chunk_lead_ms(chunk_start)
+                    heard = self._pause_map(job_id, segment_id, ai, config, index, source_path, offset, start_ms, end_ms)
+                    if heard is not None:
+                        phrases = heard
                 self.db.execute(
-                    "INSERT INTO segments(id, job_id, project_id, segment_index, start_ms, end_ms, source_audio_path, kind, updated_at) "
-                    "VALUES(?,?,?,?,?,?,?,?,?)",
-                    (segment_id, job_id, project["id"], index, start_ms, end_ms, str(source_path), "narration", utc_now()),
+                    "INSERT INTO segments(id, job_id, project_id, segment_index, start_ms, end_ms, source_audio_path, kind, phrases_json, updated_at) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (segment_id, job_id, project["id"], index, start_ms, end_ms, str(source_path), "narration", json.dumps(phrases), utc_now()),
                 )
         return segment_ids
 
@@ -353,44 +504,45 @@ class Pipeline:
             (faithful.english_faithful, json.dumps(faithful.entities), json.dumps(faithful.numbers), utc_now(), segment_id),
         )
 
-        adaptation = self._tracked_call(
-            job_id, segment_id, "adaptation", config["text_model"], faithful.english_faithful,
-            lambda: ai.adapt(faithful.english_faithful, config["text_model"], project["narrator_profile"] or {}, previous_context[-600:]),
-        )
-        style = adaptation.model_dump(exclude={"narration_text"})
+        narration_text, style, lines, lines_ok = self._adapt_lines(ai, job, project, segment, faithful.english_faithful, previous_context)
         self.db.execute(
-            "UPDATE segments SET narration_en=?, style_json=?, status='adapted', updated_at=? WHERE id=?",
-            (adaptation.narration_text, json.dumps(style), utc_now(), segment_id),
+            "UPDATE segments SET narration_en=?, style_json=?, lines_json=?, status='adapted', updated_at=? WHERE id=?",
+            (narration_text, json.dumps(style), json.dumps(lines), utc_now(), segment_id),
         )
 
-        stem = f"{segment['segment_index']:04d}_r{segment['revision']:02d}"
-        generated = self._generated_dir(project["id"], job_id)
-        raw_path, tts_path = generated / f"{stem}_raw.wav", generated / f"{stem}.wav"
-        self._tracked_call(
-            job_id, segment_id, "tts", config["tts_model"], adaptation.narration_text,
-            lambda: ai.synthesize(
-                adaptation.narration_text, config["tts_model"], config["voice"], style, raw_path,
-                profile, previous_style, persona, speed, previous_text=previous_context,
-            ),
-        )
-        shaped = self._shape_pauses(ai, job, segment, raw_path, tts_path, adaptation.narration_text, profile)
-        tts_duration = self.audio.probe(tts_path).duration_ms
-        self.db.execute(
-            "UPDATE segments SET tts_audio_path=?, tts_duration_ms=?, status='generated', updated_at=? WHERE id=?",
-            (str(tts_path), tts_duration, utc_now(), segment_id),
-        )
+        shaped, tts_duration = None, None
+        if config.get("voice_stage", self.config.voice_stage):
+            stem = f"{segment['segment_index']:04d}_r{segment['revision']:02d}"
+            generated = self._generated_dir(project["id"], job_id)
+            raw_path, tts_path = generated / f"{stem}_raw.wav", generated / f"{stem}.wav"
+            self._tracked_call(
+                job_id, segment_id, "tts", config["tts_model"], narration_text,
+                lambda: ai.synthesize(
+                    narration_text, config["tts_model"], config["voice"], style, raw_path,
+                    profile, previous_style, persona, speed, previous_text=previous_context,
+                ),
+            )
+            shaped = self._shape_pauses(ai, job, segment, raw_path, tts_path, narration_text, profile)
+            tts_duration = self.audio.probe(tts_path).duration_ms
+            self.db.execute(
+                "UPDATE segments SET tts_audio_path=?, tts_duration_ms=?, status='generated', updated_at=? WHERE id=?",
+                (str(tts_path), tts_duration, utc_now(), segment_id),
+            )
 
         qa = self._tracked_call(
-            job_id, segment_id, "qa", config["qa_model"], faithful.english_faithful + adaptation.narration_text,
-            lambda: ai.evaluate(faithful.english_faithful, adaptation.narration_text, config["qa_model"]),
+            job_id, segment_id, "qa", config["qa_model"], faithful.english_faithful + narration_text,
+            lambda: ai.evaluate(faithful.english_faithful, narration_text, config["qa_model"]),
         )
         qa_payload = self._qa_verdict(qa, transcript, tts_duration, segment, shaped)
+        if not lines_ok:
+            qa_payload["passed"] = False
+            qa_payload["issues"] = qa_payload["issues"] + ["Script lines do not follow the spoken runs"]
         qa_status = "passed" if qa_payload["passed"] else "needs_review"
         self.db.execute(
             "UPDATE segments SET qa_json=?, qa_status=?, status=?, updated_at=? WHERE id=?",
             (json.dumps(qa_payload), qa_status, qa_status, utc_now(), segment_id),
         )
-        return adaptation.narration_text, style
+        return narration_text, style
 
     def process_job(self, job_id: str) -> None:
         job = self.db.one("SELECT * FROM jobs WHERE id=?", (job_id,))
@@ -498,6 +650,7 @@ class Pipeline:
             style = segment["style"] or {}
             shaped = None
             revoiced = False
+            lines_ok = self._stored_lines_ok(job["id"], segment)
             if stage == "translation":
                 faithful = self._tracked_call(
                     job["id"], segment_id, "translation", config["text_model"], segment["transcript_si"],
@@ -510,17 +663,14 @@ class Pipeline:
                 )
                 stage = "adaptation"
             if stage == "adaptation":
-                adaptation = self._tracked_call(
-                    job["id"], segment_id, "adaptation", config["text_model"], faithful_text,
-                    lambda: ai.adapt(faithful_text, config["text_model"], project["narrator_profile"] or {}, previous_narration[-600:]),
-                )
-                narration_text = adaptation.narration_text
-                style = adaptation.model_dump(exclude={"narration_text"})
+                narration_text, style, lines, lines_ok = self._adapt_lines(ai, job, project, segment, faithful_text, previous_narration)
                 self.db.execute(
-                    "UPDATE segments SET narration_en=?, style_json=? WHERE id=?",
-                    (narration_text, json.dumps(style), segment_id),
+                    "UPDATE segments SET narration_en=?, style_json=?, lines_json=? WHERE id=?",
+                    (narration_text, json.dumps(style), json.dumps(lines), segment_id),
                 )
                 stage = "tts"
+            if stage == "tts" and not config.get("voice_stage", self.config.voice_stage):
+                stage = "qa"  # a text-only job is never voiced, whatever the button asked for
             if stage == "tts":
                 revoiced = True
                 revision = segment["revision"] + 1
@@ -548,6 +698,9 @@ class Pipeline:
                 lambda: ai.evaluate(fresh["faithful_en"], fresh["narration_en"], config["qa_model"]),
             )
             qa_payload = self._qa_verdict(qa, fresh["transcript_si"], fresh.get("tts_duration_ms"), fresh, shaped, revoiced=revoiced)
+            if not lines_ok:
+                qa_payload["passed"] = False
+                qa_payload["issues"] = qa_payload["issues"] + ["Script lines do not follow the spoken runs"]
             status = "passed" if qa_payload["passed"] else "needs_review"
             self.db.execute(
                 "UPDATE segments SET qa_json=?, qa_status=?, status=?, updated_at=? WHERE id=?",
@@ -637,6 +790,45 @@ class Pipeline:
             "UPDATE segments SET qa_json=?, qa_status='passed', status='approved', updated_at=? WHERE id=?",
             (json.dumps(qa), utc_now(), segment_id),
         )
+
+    def edit_script(self, segment_id: str, text: str) -> None:
+        """Store a reviewer's script and carry it onto the segment's lines, so the export voices the edit."""
+        segment = self.db.one("SELECT lines_json FROM segments WHERE id=?", (segment_id,))
+        lines = breaks.relines((segment or {}).get("lines") or [], text, recordings.COVERAGE_MIN)
+        self.db.execute(
+            "UPDATE segments SET narration_en=?, lines_json=?, status='edited', qa_status='pending', revision=revision+1, updated_at=? WHERE id=?",
+            (text, json.dumps(lines or []), utc_now(), segment_id),
+        )
+
+    def export_script_parts(self, project_id: str, job_id: str | None = None) -> dict[str, str]:
+        """Write the reviewed script as ordered parts with break marks, around the kept recordings."""
+        if not job_id:
+            latest = self.db.one("SELECT id FROM jobs WHERE project_id=? ORDER BY created_at DESC LIMIT 1", (project_id,))
+            if not latest:
+                raise RuntimeError("No processing job exists for this project")
+            job_id = latest["id"]
+        segments = self.db.all("SELECT * FROM segments WHERE job_id=? ORDER BY segment_index", (job_id,))
+        pieces = script_parts.expand(script_parts.plan_parts(segments))
+        if not pieces:
+            raise RuntimeError("No reviewed narration to export yet")
+        for piece in pieces:
+            if piece["kind"] == "recording" and not (piece["audio_path"] and Path(piece["audio_path"]).is_file()):
+                raise RuntimeError(f"Kept recording for segment {piece['segment_index']} has no audio; regenerate it first")
+        out_dir = self.config.data_dir / "projects" / project_id / "exports" / "script_parts"
+        if out_dir.exists():
+            shutil.rmtree(out_dir)
+        out_dir.mkdir(parents=True)
+        written: dict[str, str] = {}
+        for piece in pieces:
+            name = script_parts.file_name(piece)
+            if piece["kind"] == "recording":
+                shutil.copyfile(piece["audio_path"], out_dir / name)
+            else:
+                (out_dir / name).write_text(script_parts.render(piece), encoding="utf-8")
+            written[name] = str(out_dir / name)
+        (out_dir / "index.md").write_text("\n".join(script_parts.index_lines(pieces)) + "\n", encoding="utf-8")
+        written["index.md"] = str(out_dir / "index.md")
+        return written
 
     def assemble_project(self, project_id: str, job_id: str | None = None) -> dict[str, str]:
         if not job_id:

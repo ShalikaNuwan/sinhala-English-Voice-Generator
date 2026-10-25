@@ -1,14 +1,16 @@
 """Pull the reviewed English and Sinhala text from a running server into the local database.
 
-    .venv/bin/python scripts/sync_from_server.py http://13.229.108.159:8000
-    .venv/bin/python scripts/sync_from_server.py data/voice_previews/server_segments_snapshot.json
+    .venv/bin/python scripts/sync_from_server.py http://54.179.216.11:8000 [project_id]
+    .venv/bin/python scripts/sync_from_server.py data/server_pull/gacy-2026-10-08/segments.json
 
-Takes a running server's base URL, or a saved snapshot of its segment list, so the server does not
-have to be running (and billing) just to copy text across.
+Takes a running server's base URL (and the project id; the newest project otherwise), or a saved
+snapshot of its segment list, so the server does not have to be running (and billing) just to copy
+text across.
 
 Review happens wherever the app is deployed, so the edited scripts live there and the local copy
-falls behind. This copies the text and the QA verdicts back, matching on segment id, and touches
-nothing else: audio paths, revisions and timings stay as they are locally. Makes no API calls and
+falls behind. This copies the text, the script lines with their break marks, and the QA verdicts back,
+matching on segment id, and touches nothing else: audio paths, revisions and timings stay as they
+are locally. Makes no API calls and
 costs nothing. Writes a timestamped backup of the local database first.
 """
 
@@ -31,7 +33,7 @@ from app.database import Database, utc_now  # noqa: E402
 FIELDS = ("transcript_si", "narration_en", "faithful_en")
 # `status` carries "approved", the marker that a reviewer accepted a segment by hand, so it has to
 # come across or the record of that decision is lost.
-EXTRA = ("style_json", "status")
+EXTRA = ("lines_json", "style_json", "status")
 
 
 def fetch(url: str) -> list[dict]:
@@ -39,8 +41,8 @@ def fetch(url: str) -> list[dict]:
         return json.loads(response.read())
 
 
-def segments_from(source: str) -> tuple[str, list[dict]]:
-    """Either a live server or a saved snapshot of one."""
+def segments_from(source: str, project_id: str | None = None) -> tuple[str, list[dict]]:
+    """Either a live server (one project, the newest by default) or a saved snapshot of one."""
     local_file = Path(source)
     if local_file.exists():
         return f"snapshot {local_file.name}", json.loads(local_file.read_text(encoding="utf-8"))
@@ -48,7 +50,13 @@ def segments_from(source: str) -> tuple[str, list[dict]]:
     projects = fetch(f"{base}/api/projects")
     if not projects:
         sys.exit("The server has no projects")
-    project = projects[0]
+    if project_id:
+        matching = [p for p in projects if p["id"] == project_id]
+        if not matching:
+            sys.exit(f"The server has no project {project_id}")
+        project = matching[0]
+    else:
+        project = max(projects, key=lambda p: p["created_at"])
     job = fetch(f"{base}/api/projects/{project['id']}")["jobs"][0]
     return project["title"], fetch(f"{base}/api/jobs/{job['id']}/segments")
 
@@ -56,7 +64,7 @@ def segments_from(source: str) -> tuple[str, list[dict]]:
 def main() -> None:
     if len(sys.argv) < 2:
         sys.exit(__doc__)
-    label, remote = segments_from(sys.argv[1])
+    label, remote = segments_from(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else None)
     print(f"source: {label} - {len(remote)} segments")
 
     backup = settings.database_path.with_name(
@@ -81,8 +89,15 @@ def main() -> None:
                 updates.append(f"{field}=?")
                 values.append(new)
                 changed[field] += 1
+        # The lines carry a reviewer's edit onto the break marks; a reshaped script clears them on
+        # the server, and the local copy must follow or the export would voice the old lines.
+        if "lines" in segment:
+            remote_lines = json.dumps(segment.get("lines") or [])
+            # Database rows come back decoded: the lines_json column is read as `lines`.
+            if json.loads(remote_lines) != (local.get("lines") or []):
+                updates.append("lines_json=?"); values.append(remote_lines); changed["lines_json"] += 1
         remote_style = json.dumps(segment.get("style") or {}, sort_keys=True)
-        if remote_style != json.dumps(json.loads(local.get("style_json") or "{}"), sort_keys=True):
+        if remote_style != json.dumps(local.get("style") or {}, sort_keys=True):
             updates.append("style_json=?"); values.append(remote_style); changed["style_json"] += 1
         if segment.get("status") and segment["status"] != local.get("status"):
             updates.append("status=?"); values.append(segment["status"]); changed["status"] += 1

@@ -67,7 +67,7 @@ def test_adaptation_has_documented_defaults_and_a_stable_style_contract():
     assert adaptation.pause_before_ms == 0
     assert adaptation.pause_after_ms == 0
     # app/direction.py reads these keys from the stored style; the set must not drift.
-    style = adaptation.model_dump(exclude={"narration_text"})
+    style = adaptation.model_dump(exclude={"narration_text", "lines"})
     assert set(style) == {"beat", "delivery", "pace", "emphasis", "pause_before_ms", "pause_after_ms", "emotion"}
     # The adaptation prompt names these beats by hand; keep prompt and schema in sync.
     assert set(get_args(NarrationAdaptation.model_fields["beat"].annotation)) == {
@@ -376,3 +376,237 @@ def test_synthesis_still_uses_openai_when_no_other_provider_is_configured(tmp_pa
     assert captured["voice"] == "cedar"
     assert captured["model"] == "gpt-4o-mini-tts"
     assert "instructions" in captured  # the full brief still goes to OpenAI
+
+
+def test_adaptation_with_runs_asks_for_one_line_per_run():
+    captured = {}
+
+    class Responses:
+        def parse(self, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(output_parsed=NarrationAdaptation(narration_text="ok"))
+
+    ai = AIClient.__new__(AIClient)
+    ai.client = SimpleNamespace(responses=Responses())
+
+    ai.adapt("She said it. He left.", "m", {}, runs=["ඇය කිව්වා", "එයා ගියා"])
+
+    system = captured["input"][0]["content"]
+    user = captured["input"][1]["content"]
+    assert "one line per run" in system
+    assert "paragraph-break limit above does not apply" in system
+    assert "rough machine transcripts" in system and "faithful translation" in system
+    assert "Spoken runs, numbered, in order:\n1. ඇය කිව්වා\n2. එයා ගියා" in user
+
+
+def test_adaptation_without_runs_keeps_the_passage_prompt():
+    captured = {}
+
+    class Responses:
+        def parse(self, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(output_parsed=NarrationAdaptation(narration_text="ok"))
+
+    ai = AIClient.__new__(AIClient)
+    ai.client = SimpleNamespace(responses=Responses())
+
+    ai.adapt("x", "m", {})
+
+    assert "one line per run" not in captured["input"][0]["content"]
+    assert "Spoken runs" not in captured["input"][1]["content"]
+
+
+def test_adaptation_lines_parse_and_default_to_empty():
+    from app.schemas import ScriptLine
+
+    adaptation = NarrationAdaptation(narration_text="A.\n\nB.", lines=[ScriptLine(text="A.", runs=[1]), ScriptLine(text="B.", runs=[2, 3])])
+    assert [line.runs for line in adaptation.lines] == [[1], [2, 3]]
+    assert NarrationAdaptation(narration_text="x").lines == []
+    style = adaptation.model_dump(exclude={"narration_text", "lines"})
+    assert "lines" not in style
+
+
+class FakeRealtimeConnection:
+    """A Realtime session that hands back a scripted event list and then goes quiet."""
+
+    def __init__(self, script):
+        self.script = list(script)
+        self.session_payload = None
+        self.appended: list[str] = []
+        self.commits = 0
+        self.session = SimpleNamespace(update=self._update)
+        self.input_audio_buffer = SimpleNamespace(append=self._append, commit=self._commit)
+
+    async def _update(self, session):
+        self.session_payload = session
+
+    async def _append(self, audio):
+        self.appended.append(audio)
+
+    async def _commit(self):
+        self.commits += 1
+
+    async def recv(self):
+        import asyncio
+
+        if not self.script:
+            raise asyncio.TimeoutError
+        item = self.script.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+
+class FakeRealtimeClient:
+    def __init__(self, connection):
+        self.connection = connection
+        self.connect_kwargs = None
+        self.closed = False
+        self.realtime = SimpleNamespace(connect=self._connect)
+
+    async def close(self):
+        self.closed = True
+
+    def _connect(self, **kwargs):
+        self.connect_kwargs = kwargs
+        connection = self.connection
+
+        class Opened:
+            async def __aenter__(self):
+                return connection
+
+            async def __aexit__(self, *_):
+                return False
+
+        return Opened()
+
+
+def speech_event(kind: str, item_id: str, **fields):
+    return SimpleNamespace(type=kind, item_id=item_id, **fields)
+
+
+def test_speech_turns_streams_the_pcm_and_pairs_the_voice_detection_events(tmp_path):
+    import base64
+
+    pcm = tmp_path / "chunk.pcm"
+    pcm.write_bytes(b"\x01\x02" * 48_000)  # 4 s of 24 kHz 16-bit mono
+    connection = FakeRealtimeConnection([
+        speech_event("input_audio_buffer.speech_started", "a", audio_start_ms=0),
+        speech_event("input_audio_buffer.speech_stopped", "a", audio_end_ms=2200),
+        speech_event("input_audio_buffer.speech_started", "b", audio_start_ms=3000),
+        speech_event("conversation.item.input_audio_transcription.completed", "b", transcript="දෙක"),
+        speech_event("conversation.item.input_audio_transcription.completed", "a", transcript="එක"),
+    ])
+    client = FakeRealtimeClient(connection)
+    ai = AIClient.__new__(AIClient)
+    ai.api_key = "test-key"
+    ai._async_client = lambda: client
+
+    result = ai.speech_turns(pcm, 5000, 0.8, 200, "gpt-4o-transcribe")
+
+    assert result == [
+        {"start_ms": 0, "end_ms": 2000, "text": "එක"},
+        {"start_ms": 3000, "end_ms": 5000, "text": "දෙක"},
+    ]
+    # The model belongs in the session, never in the URL: a model there is rejected as invalid.
+    assert client.connect_kwargs == {"extra_query": {"intent": "transcription"}}
+    session = connection.session_payload
+    assert session["type"] == "transcription"
+    audio_input = session["audio"]["input"]
+    assert audio_input["format"] == {"type": "audio/pcm", "rate": 24000}
+    assert audio_input["turn_detection"] == {
+        "type": "server_vad", "threshold": 0.8, "prefix_padding_ms": 0, "silence_duration_ms": 200,
+    }
+    assert audio_input["transcription"] == {"model": "gpt-4o-transcribe"}
+    # Every byte reaches the session, in pieces of at most 100 ms, and the buffer is committed once.
+    pieces = [base64.b64decode(chunk) for chunk in connection.appended]
+    assert b"".join(pieces) == pcm.read_bytes()
+    assert max(len(piece) for piece in pieces) <= 4800
+    assert connection.commits == 1
+
+
+def test_speech_turns_reports_a_session_that_only_returned_an_error(tmp_path):
+    import pytest
+
+    pcm = tmp_path / "chunk.pcm"
+    pcm.write_bytes(b"\x00\x00" * 24_000)
+    connection = FakeRealtimeConnection([
+        SimpleNamespace(type="error", error=SimpleNamespace(message="invalid_model")),
+    ])
+    ai = AIClient.__new__(AIClient)
+    ai.api_key = "test-key"
+    ai._async_client = lambda: FakeRealtimeClient(connection)
+
+    with pytest.raises(RuntimeError, match="invalid_model"):
+        ai.speech_turns(pcm, 1000, 0.8, 200, "gpt-4o-transcribe")
+
+
+def test_speech_turns_keeps_the_turns_it_heard_when_an_error_closes_the_session(tmp_path):
+    pcm = tmp_path / "chunk.pcm"
+    pcm.write_bytes(b"\x00\x00" * 24_000)
+    connection = FakeRealtimeConnection([
+        speech_event("input_audio_buffer.speech_started", "a", audio_start_ms=0),
+        speech_event("input_audio_buffer.speech_stopped", "a", audio_end_ms=900),
+        # The explicit commit of a buffer server VAD already took is a routine complaint, not a loss,
+        # and the transcripts still arrive after it.
+        SimpleNamespace(type="error", error=SimpleNamespace(message="buffer too small")),
+        speech_event("conversation.item.input_audio_transcription.completed", "a", transcript="heard"),
+    ])
+    ai = AIClient.__new__(AIClient)
+    ai.api_key = "test-key"
+    client = FakeRealtimeClient(connection)
+    ai._async_client = lambda: client
+
+    assert ai.speech_turns(pcm, 1000, 0.8, 200, "gpt-4o-transcribe") == [
+        {"start_ms": 0, "end_ms": 700, "text": "heard"},
+    ]
+    assert client.closed
+
+
+def test_speech_turns_keeps_partial_turns_when_the_connection_drops(tmp_path):
+    pcm = tmp_path / "chunk.pcm"
+    pcm.write_bytes(b"\x00\x00" * 24_000)
+    connection = FakeRealtimeConnection([
+        speech_event("input_audio_buffer.speech_started", "a", audio_start_ms=0),
+        speech_event("input_audio_buffer.speech_stopped", "a", audio_end_ms=900),
+        ConnectionError("connection closed"),
+    ])
+    ai = AIClient.__new__(AIClient)
+    ai.api_key = "test-key"
+    ai._async_client = lambda: FakeRealtimeClient(connection)
+
+    assert ai.speech_turns(pcm, 1000, 0.8, 200, "gpt-4o-transcribe") == [{"start_ms": 0, "end_ms": 700, "text": ""}]
+
+
+def test_speech_turns_raises_when_the_connection_drops_before_any_speech(tmp_path):
+    import pytest
+
+    pcm = tmp_path / "chunk.pcm"
+    pcm.write_bytes(b"\x00\x00" * 24_000)
+    connection = FakeRealtimeConnection([ConnectionError("connection closed")])
+    ai = AIClient.__new__(AIClient)
+    ai.api_key = "test-key"
+    ai._async_client = lambda: FakeRealtimeClient(connection)
+
+    with pytest.raises(ConnectionError):
+        ai.speech_turns(pcm, 1000, 0.8, 200, "gpt-4o-transcribe")
+
+
+def test_speech_turns_works_when_the_caller_already_runs_an_event_loop(tmp_path):
+    import asyncio
+
+    pcm = tmp_path / "chunk.pcm"
+    pcm.write_bytes(b"\x00\x00" * 24_000)
+    connection = FakeRealtimeConnection([
+        speech_event("input_audio_buffer.speech_started", "a", audio_start_ms=100),
+        speech_event("input_audio_buffer.speech_stopped", "a", audio_end_ms=900),
+    ])
+    ai = AIClient.__new__(AIClient)
+    ai.api_key = "test-key"
+    ai._async_client = lambda: FakeRealtimeClient(connection)
+
+    async def from_a_loop():
+        # The pipeline can run under a server's loop; the session then gets its own in a worker thread.
+        return ai.speech_turns(pcm, 1000, 0.8, 200, "gpt-4o-transcribe")
+
+    assert asyncio.run(from_a_loop()) == [{"start_ms": 100, "end_ms": 700, "text": ""}]

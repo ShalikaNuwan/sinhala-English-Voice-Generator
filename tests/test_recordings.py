@@ -233,3 +233,57 @@ def test_a_stray_fragment_between_narrator_spans_is_not_a_recording():
 
 def test_inverted_narrator_spans_are_normalised_in_narration_spans():
     assert recordings.narration_spans([span(recordings.NARRATOR, 8, 5, SINHALA)]) == [(8000, 8000)]
+
+
+def test_fill_gaps_adds_only_the_stretch_the_first_pass_missed():
+    primary = [span(recordings.NARRATOR, 0, 10, SINHALA), span(recordings.NARRATOR, 20, 30, SINHALA)]
+    secondary = [span(recordings.NARRATOR, 8, 25, "missed " + SINHALA)]
+
+    filled = recordings.fill_gaps(primary, secondary)
+
+    assert filled == [
+        primary[0],
+        {"speaker": recordings.NARRATOR, "start": 10.0, "end": 20.0, "text": "missed " + SINHALA, "filled": True},
+        primary[1],
+    ]
+    assert filled[0] is primary[0] and filled[2] is primary[1]  # the first pass stays the base
+
+
+def test_fill_gaps_ignores_a_gap_under_the_minimum():
+    primary = [span("A", 0, 10, "Hello?"), span("A", 10.2, 20, "Do you need the police?")]
+
+    assert recordings.fill_gaps(primary, [span(recordings.NARRATOR, 0, 20, SINHALA)]) == primary
+
+
+def test_fill_gaps_ignores_a_secondary_span_that_is_not_the_narrator():
+    primary = [span(recordings.NARRATOR, 0, 10, SINHALA), span(recordings.NARRATOR, 20, 30, SINHALA)]
+
+    assert recordings.fill_gaps(primary, [span("A", 12, 18, "Do you need the police?")]) == primary
+
+
+def test_narrator_coverage_counts_only_what_falls_in_the_narration_pieces():
+    pieces = [(0, 10000, "narration"), (10000, 20000, "original"), (20000, 30000, "narration")]
+    spans = [span(recordings.NARRATOR, 0, 8, SINHALA), span(recordings.NARRATOR, 14, 27, SINHALA)]
+
+    assert recordings.narrator_coverage(spans, pieces) == 0.75  # 0-8 s plus 20-27 s, over 20 s of narration
+
+
+def test_narrator_coverage_does_not_count_an_overlap_twice():
+    pieces = [(0, 10000, "narration")]
+    spans = [span(recordings.NARRATOR, 0, 6, SINHALA), span(recordings.NARRATOR, 4, 9, SINHALA)]
+
+    assert recordings.narrator_coverage(spans, pieces) == 0.9
+    assert recordings.narrator_coverage([], pieces) == 0.0
+    assert recordings.narrator_coverage(spans, [(0, 10000, "original")]) == 1.0
+
+
+def test_a_filled_span_never_splits_a_recording_or_enters_its_transcript():
+    spans = [
+        {"speaker": "A", "start": 10.0, "end": 14.0, "text": "Hello?"},
+        {"speaker": "narrator", "start": 15.0, "end": 16.0, "text": "Mistaken fill", "filled": True},
+        {"speaker": "A", "start": 17.0, "end": 20.0, "text": "Do you need the police?"},
+        {"speaker": "narrator", "start": 20.0, "end": 30.0, "text": "සිංහල"},
+    ]
+
+    assert recordings.original_spans(spans, 30000) == [(10000 - recordings.PAD_MS, 20000 + recordings.PAD_MS)]
+    assert recordings.clip_text(spans, 9850, 20150) == "Hello? Do you need the police?"

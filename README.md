@@ -59,7 +59,7 @@ All model names are environment variables so deployment is not tied to a changin
 | Variable | Default |
 |---|---|
 | `STT_MODEL` | `gpt-transcribe` |
-| `TEXT_MODEL` | `gpt-5.6-terra` |
+| `TEXT_MODEL` | `gpt-6-sol` |
 | `QA_MODEL` | `gpt-5.6-terra` |
 | `TTS_MODEL` | `gpt-4o-mini-tts` |
 | `TTS_VOICE` | `cedar` |
@@ -67,6 +67,11 @@ All model names are environment variables so deployment is not tied to a changin
 | `DIARIZE_MODEL` | `gpt-4o-transcribe-diarize` |
 | `DETECT_RECORDINGS` | `1` |
 | `ALIGN_MODEL` | `whisper-1` |
+| `VOICE_STAGE` | `1` |
+| `PAUSE_SOURCE` | `realtime` |
+| `REALTIME_VAD_THRESHOLD` | `0.8` |
+| `REALTIME_VAD_SILENCE_MS` | `200` |
+| `TURN_TRANSCRIBE_MODEL` | `gpt-4o-transcribe` |
 | `SHAPE_PAUSES` | `1` |
 | `MASTER_VOICE` | `1` |
 | `TTS_PROVIDER` | `openai` |
@@ -194,7 +199,8 @@ the persona or rules.
 Creator videos often play real evidence audio: a 911 call, an interrogation, a news clip. That audio
 must not be translated or re-voiced. Once per project the pipeline diarizes the delivery sample,
 takes the dominant speaker's longest span (2–10 s) as the narrator reference, and stores it in the
-speaking profile. Every chunk is then diarized with that reference. A recording starts at speech by
+speaking profile. Every chunk is then diarized with that reference, twice, the second pass filling
+narrator stretches the first dropped. A recording starts at speech by
 someone other than the narrator in a Latin-only script and continues, across its own silences,
 until the narrator speaks again in Sinhala. Recordings under 1.5 s are ignored; kept ones are padded
 150 ms into silence.
@@ -239,6 +245,47 @@ does not line up either, the raw voice is kept and the job says so. `SHAPE_PAUSE
 
 `scripts/pause_listening_set.py <job_id> <segment_index...>` copies the raw and shaped files for
 chosen segments to `data/pause_listening/` with a pause table for each, for listening.
+
+## Voicing outside the pipeline
+
+Tick "Text only (voice elsewhere)" before starting processing (or send `voice_stage: false`, or set
+`VOICE_STAGE=0`) and a job stops after transcription, detection, translation, adaptation and QA:
+nothing is voiced and no voice credit is spent. Review the scripts as usual, then click "Export
+script parts" (`POST /api/projects/{id}/export/parts`, or `scripts/export_script_parts.py`).
+
+The breaks in the exported script are the narrator's own. The pause map comes from OpenAI's Realtime
+API: a transcription session with server voice detection reports every moment the narrator starts
+and stops speaking, in milliseconds, and transcribes each turn, and the same audio gives the same
+boundaries on every call, which the diarizer's spans do not. The diarizer now only finds the
+narrator and the kept recordings. `PAUSE_SOURCE=diarizer` goes back to taking the phrases from its
+narrator spans, which is also the automatic fallback, with the warning "Pause map unavailable for
+segment N: …", when a session fails; `REALTIME_VAD_THRESHOLD` (0.8) sets how readily speech is heard
+and `REALTIME_VAD_SILENCE_MS` (200) how much silence ends a turn.
+
+Phrases that run on with under 150 ms between them are one flowing run, and a real pause ends a run.
+The adaptation writes the English as one line per run, in order (merging two runs only when English
+grammar forces it), so every line has a measured silence after it. That silence is written after the
+line as `<break time="0.8s" />`, which ElevenLabs Multilingual v2 honours (v3 does not read break
+tags). A line that ends a sentence gets at least 400 ms; nothing exceeds 3.0 s; a gap under 300 ms
+writes no mark. The table lives at the top of `app/breaks.py`. When a segment's lines do not cover
+its runs, QA sends it to review with "Script lines do not follow the spoken runs". Segments without
+phrase data (nothing heard, or older jobs) export their paragraphs with default breaks of 0.9 s
+between paragraphs and 0.5 s at the end.
+
+Every chunk is diarized twice, because one call drops spans another returns, which moves the piece
+boundaries and, under `PAUSE_SOURCE=diarizer`, reads as a long pause the narrator never took; the
+second pass fills only the stretches of at least 300 ms the first never heard, and a third pass runs
+when the narrator still covers under 85 percent of the chunk's narration. Silence nobody was heard over is a hole, not a measurement: when a segment's
+phrases cover under 85 percent of it, every break over 1.0 s is capped at 1.0 s and the job carries
+"Phrases cover N% of segment K; breaks over 1.0 s capped", and `index.md` marks that part with
+"coverage NN% (check breaks by ear)" so you know which one to check.
+
+The export is written to `exports/script_parts/`: every stretch of narration between two kept
+recordings becomes one or more numbered text files (split at 9,000 characters or 40 break marks,
+since too many marks in one generation destabilise the voice), every kept recording is copied as a
+numbered WAV, and `index.md` lists the playing order with source times, a target length per part,
+and the character and mark counts. Voice each narration file on its own in ElevenLabs, then place the
+recording files between the voiced parts in your editor.
 
 ## Voicing with ElevenLabs
 

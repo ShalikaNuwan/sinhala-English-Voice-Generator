@@ -16,7 +16,7 @@ class Settings:
     database_path: Path | None = None
     openai_api_key: str | None = field(default_factory=lambda: os.getenv("OPENAI_API_KEY"))
     stt_model: str = field(default_factory=lambda: os.getenv("STT_MODEL", "gpt-transcribe"))
-    text_model: str = field(default_factory=lambda: os.getenv("TEXT_MODEL", "gpt-5.6-terra"))
+    text_model: str = field(default_factory=lambda: os.getenv("TEXT_MODEL", "gpt-6-sol"))
     qa_model: str = field(default_factory=lambda: os.getenv("QA_MODEL", "gpt-5.6-terra"))
     tts_model: str = field(default_factory=lambda: os.getenv("TTS_MODEL", "gpt-4o-mini-tts"))
     tts_voice: str = field(default_factory=lambda: os.getenv("TTS_VOICE", "cedar"))
@@ -26,11 +26,22 @@ class Settings:
         default_factory=lambda: os.getenv("DETECT_RECORDINGS", "1").strip().lower() not in {"0", "false", "no"}
     )
     align_model: str = field(default_factory=lambda: os.getenv("ALIGN_MODEL", "whisper-1"))
+    # Where a narration segment's phrase times come from: the Realtime session's voice detection,
+    # or, with "diarizer", the narrator spans the diarization pass returned.
+    pause_source: str = field(default_factory=lambda: os.getenv("PAUSE_SOURCE", "realtime"))
+    realtime_vad_threshold: float = field(default_factory=lambda: float(os.getenv("REALTIME_VAD_THRESHOLD", "0.8")))
+    realtime_vad_silence_ms: int = field(default_factory=lambda: int(os.getenv("REALTIME_VAD_SILENCE_MS", "200")))
+    turn_transcribe_model: str = field(
+        default_factory=lambda: os.getenv("TURN_TRANSCRIBE_MODEL", "gpt-4o-transcribe")
+    )
     shape_pauses: bool = field(
         default_factory=lambda: os.getenv("SHAPE_PAUSES", "1").strip().lower() not in {"0", "false", "no"}
     )
     master_voice: bool = field(
         default_factory=lambda: os.getenv("MASTER_VOICE", "1").strip().lower() not in {"0", "false", "no"}
+    )
+    voice_stage: bool = field(
+        default_factory=lambda: os.getenv("VOICE_STAGE", "1").strip().lower() not in {"0", "false", "no"}
     )
     # Voicing can be handed to ElevenLabs; every text stage stays on OpenAI either way.
     tts_provider: str = field(default_factory=lambda: os.getenv("TTS_PROVIDER", "openai").strip().lower())
@@ -51,6 +62,9 @@ class Settings:
 
     def __post_init__(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.pause_source = self.pause_source.strip().lower()
+        if self.pause_source not in {"realtime", "diarizer"}:
+            self.pause_source = "realtime"
         if self.database_path is None:
             self.database_path = self.data_dir / "app.db"
 

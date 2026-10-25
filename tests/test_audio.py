@@ -246,3 +246,15 @@ def test_master_keeps_the_pipeline_audio_format(tmp_path):
     info = audio.master(source, tmp_path / "out" / "voice.wav")
 
     assert info.channels == 1 and info.sample_rate == 24000
+
+
+def test_pcm_conversion_writes_raw_24k_mono_and_reports_the_duration(tmp_path):
+    audio = AudioService()
+    source = tone(tmp_path / "piece.wav", 1.5)
+    pcm = tmp_path / "piece.pcm"
+
+    duration_ms = audio.to_pcm(source, pcm)
+
+    assert duration_ms == 1500
+    # Raw 16-bit mono at 24 kHz: two bytes a sample, no header.
+    assert pcm.stat().st_size == 1500 * 48

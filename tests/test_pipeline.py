@@ -13,17 +13,28 @@ from app.pipeline import Pipeline
 from app.schemas import FaithfulTranslation, NarrationAdaptation, QAEvaluation
 
 
+SINHALA = "ඇය කියනවා කවුරුහරි එනවා කියලා."
+SINHALA_TEST = "මෙය පරීක්ෂණයකි."
+CALL = "Hello? Do you need the police?"
+
+
 class FakeAI:
+    def __init__(self):
+        self.turn_calls: list[dict] = []
+
     def transcribe(self, *_args, **_kwargs):
         return "මෙය පරීක්ෂණයකි."
 
     def translate(self, *_args, **_kwargs):
         return FaithfulTranslation(english_faithful="This is a test.")
 
-    def adapt(self, *_args, **_kwargs):
-        return NarrationAdaptation(
-            narration_text="This is a test.", beat="reveal", emotion="tense", pause_after_ms=800,
-        )
+    def adapt(self, *_args, runs=None, **_kwargs):
+        from app.schemas import ScriptLine
+        if runs:
+            lines = [ScriptLine(text=f"Line {number}.", runs=[number]) for number in range(1, len(runs) + 1)]
+            return NarrationAdaptation(narration_text="\n\n".join(line.text for line in lines), lines=lines,
+                                       beat="reveal", emotion="tense", pause_after_ms=800)
+        return NarrationAdaptation(narration_text="This is a test.", beat="reveal", emotion="tense", pause_after_ms=800)
 
     def describe_delivery(self, _audio_path, _model):
         return "Steady, moderate energy with a factual tone."
@@ -32,6 +43,15 @@ class FakeAI:
         # The sample has one speaker; chunks are narrator-only unless a subclass says otherwise.
         speaker = "narrator" if reference else "A"
         return [{"speaker": speaker, "start": 0.0, "end": 3.0, "text": "මෙය පරීක්ෂණයකි."}]
+
+    def speech_turns(self, pcm_path, duration_ms, threshold, silence_ms, model):
+        self.turn_calls.append({"path": Path(pcm_path), "duration_ms": duration_ms, "threshold": threshold,
+                                "silence_ms": silence_ms, "model": model, "existed": Path(pcm_path).exists()})
+        return self.turns_for(Path(pcm_path).name, duration_ms)
+
+    def turns_for(self, _name: str, duration_ms: int) -> list[dict]:
+        """What the voice detection hears in a file: one turn, end to end, unless a subclass says otherwise."""
+        return [{"start_ms": 0, "end_ms": duration_ms, "text": SINHALA_TEST}]
 
     def synthesize(self, _text, _model, _voice, _style, output_path: Path, profile=None,
                    previous_style=None, persona=None, speed=1.0, previous_text=None):
@@ -121,6 +141,7 @@ class ProfilingFakeAI(FakeAI):
     """Fake that records how it was called, so profile plumbing can be asserted."""
 
     def __init__(self, describe_error: Exception | None = None):
+        super().__init__()
         self.describe_calls = 0
         self.describe_error = describe_error
         self.synthesis_profiles: list[dict | None] = []
@@ -143,9 +164,9 @@ class ProfilingFakeAI(FakeAI):
         self.diarize_calls.append({"path": Path(audio_path), "reference": reference})
         return super().diarize(audio_path, model, reference)
 
-    def adapt(self, faithful_en, model, narrator_profile, previous_narration=""):
-        self.adapt_calls.append({"faithful": faithful_en, "previous_narration": previous_narration})
-        return super().adapt(faithful_en, model, narrator_profile, previous_narration)
+    def adapt(self, faithful_en, model, narrator_profile, previous_narration="", runs=None):
+        self.adapt_calls.append({"faithful": faithful_en, "previous_narration": previous_narration, "runs": runs})
+        return super().adapt(faithful_en, model, narrator_profile, previous_narration=previous_narration, runs=runs)
 
     def synthesize(self, text, model, voice, style, output_path, profile=None,
                    previous_style=None, persona=None, speed=1.0, previous_text=None):
@@ -155,10 +176,6 @@ class ProfilingFakeAI(FakeAI):
             "previous_style": previous_style, "persona": persona, "speed": speed,
         })
         super().synthesize(text, model, voice, style, output_path, profile, previous_style, persona, speed)
-
-
-SINHALA = "ඇය කියනවා කවුරුහරි එනවා කියලා."
-CALL = "Hello? Do you need the police?"
 
 
 class RecordingFakeAI(ProfilingFakeAI):
@@ -187,6 +204,13 @@ class RecordingFakeAI(ProfilingFakeAI):
         return [{"speaker": "narrator", "start": 0.2, "end": 20.2, "text": SINHALA}]
 
 
+    def turns_for(self, name: str, duration_ms: int) -> list[dict]:
+        # Chunk 2's own file begins 200 ms before 45 s, where the narrator is already silent.
+        if name == "0002_source.pcm":
+            return [{"start_ms": 200, "end_ms": 20_200, "text": SINHALA}]
+        return [{"start_ms": 0, "end_ms": duration_ms, "text": SINHALA}]
+
+
 class BoundaryFakeAI(RecordingFakeAI):
     """A recording runs from 40 s to 50 s, across the 45 s chunk boundary."""
 
@@ -206,6 +230,46 @@ class BoundaryFakeAI(RecordingFakeAI):
         ]
 
 
+class PhrasedFakeAI(ProfilingFakeAI):
+    """Chunk 1 is narrator only, spoken as four phrases: A and B run on, then real pauses before C and D."""
+
+    def diarize(self, audio_path, model, reference=None):
+        self.diarize_calls.append({"path": Path(audio_path), "reference": reference})
+        if reference is None:
+            return [{"speaker": "A", "start": 0.0, "end": 9.0, "text": SINHALA}]
+        if Path(audio_path).name == "0001_source.wav":
+            return [
+                {"speaker": "narrator", "start": 0.0, "end": 8.0, "text": "A " + SINHALA},
+                {"speaker": "narrator", "start": 8.1, "end": 15.0, "text": "B " + SINHALA},
+                {"speaker": "narrator", "start": 15.6, "end": 30.0, "text": "C " + SINHALA},
+                {"speaker": "narrator", "start": 30.3, "end": 44.7, "text": "D " + SINHALA},
+            ]
+        return [{"speaker": "narrator", "start": 0.5, "end": 20.2, "text": "E " + SINHALA}]
+
+
+    def turns_for(self, name: str, duration_ms: int) -> list[dict]:
+        if name == "0001_source.pcm":
+            return [
+                {"start_ms": 0, "end_ms": 8000, "text": "A " + SINHALA},
+                {"start_ms": 8100, "end_ms": 15_000, "text": "B " + SINHALA},
+                {"start_ms": 15_600, "end_ms": 30_000, "text": "C " + SINHALA},
+                {"start_ms": 30_300, "end_ms": 44_700, "text": "D " + SINHALA},
+            ]
+        return [{"start_ms": 500, "end_ms": 20_200, "text": "E " + SINHALA}]
+
+
+class MisalignedFakeAI(PhrasedFakeAI):
+    """Returns lines that do not cover the runs."""
+
+    def adapt(self, faithful_en, model, narrator_profile, previous_narration="", runs=None):
+        from app.schemas import ScriptLine
+        self.adapt_calls.append({"faithful": faithful_en, "previous_narration": previous_narration, "runs": runs})
+        if runs:
+            lines = [ScriptLine(text="Only one.", runs=[1]), ScriptLine(text="Wrong.", runs=[1, 2])]
+            return NarrationAdaptation(narration_text="Only one.\n\nWrong.", lines=lines)
+        return NarrationAdaptation(narration_text="This is a test.")
+
+
 class PausingFakeAI(ProfilingFakeAI):
     """Voices a three-part script as tone bursts with a 0.9 s and a 1.4 s pause, and knows the word times."""
 
@@ -214,7 +278,7 @@ class PausingFakeAI(ProfilingFakeAI):
         self.timestamps_error = timestamps_error
         self.timestamp_calls = 0
 
-    def adapt(self, faithful_en, model, narrator_profile, previous_narration=""):
+    def adapt(self, faithful_en, model, narrator_profile, previous_narration="", runs=None):
         self.adapt_calls.append({"faithful": faithful_en, "previous_narration": previous_narration})
         return NarrationAdaptation(narration_text="First part, second part. Third part.", beat="build", emotion="calm")
 
@@ -251,14 +315,16 @@ def build_project(tmp_path, ai, seconds: float = 1.0, narrator_profile: dict | N
     return pipeline, db, project_id
 
 
-def start_job(db, project_id, detect_recordings: bool = True, shape_pauses: bool = True):
+def start_job(db, project_id, detect_recordings: bool = True, shape_pauses: bool = True, voice_stage: bool = True,
+              pause_source: str = "realtime"):
     job_id = str(uuid.uuid4())
     job_config = {
         "stt_model": "fake-stt", "text_model": "fake-text", "qa_model": "fake-qa",
         "tts_model": "fake-tts", "audio_model": "fake-audio", "voice": "onyx",
         "speed": 0.95,
         "diarize_model": "fake-diarize", "detect_recordings": detect_recordings,
-        "align_model": "fake-align", "shape_pauses": shape_pauses,
+        "align_model": "fake-align", "shape_pauses": shape_pauses, "voice_stage": voice_stage,
+        "pause_source": pause_source, "turn_transcribe_model": "fake-turns",
         "human_review_gate": True,
     }
     db.execute(
@@ -332,7 +398,8 @@ def test_adaptation_sees_the_previous_narration(tmp_path):
     pipeline.process_job(start_job(db, project_id))
 
     assert ai.adapt_calls[0]["previous_narration"] == ""
-    assert ai.adapt_calls[1]["previous_narration"] == "This is a test."
+    # FakeAI's diarize gives segment 1 a single narrator phrase, so it adapts over one run.
+    assert ai.adapt_calls[1]["previous_narration"] == "Line 1."
 
 
 def test_synthesis_receives_the_job_speed_and_the_project_persona(tmp_path):
@@ -423,7 +490,8 @@ def test_regenerating_the_adaptation_passes_the_predecessors_narration(tmp_path)
 
     pipeline.regenerate_segment(second["id"], "adaptation")
 
-    assert ai.adapt_calls[-1]["previous_narration"] == "This is a test."
+    # FakeAI's diarize gives segment 1 a single narrator phrase, so it adapts over one run.
+    assert ai.adapt_calls[-1]["previous_narration"] == "Line 1."
 
 
 def test_jobs_created_before_speed_existed_fall_back_to_the_configured_speed(tmp_path):
@@ -543,6 +611,8 @@ def test_detection_failure_on_a_chunk_keeps_it_as_narration_with_a_warning(tmp_p
     assert [s["kind"] for s in segments] == ["narration", "narration"]
     warnings = db.one("SELECT * FROM jobs WHERE id=?", (job_id,))["warnings"]
     assert any("Recording detection failed on chunk 1" in w for w in warnings)
+    # The pause map is heard from the piece's own audio, so the breaks survive a failed diarization.
+    assert segments[0]["phrases"] and not any("No spoken phrases for segment 1" in w for w in warnings)
     assert db.one("SELECT status FROM jobs WHERE id=?", (job_id,))["status"] == "awaiting_review"
 
 
@@ -785,7 +855,7 @@ def test_timestamp_failure_falls_back_to_punctuation_order(tmp_path):
 
 def test_unshapeable_audio_keeps_the_raw_voice_with_a_warning(tmp_path):
     class LonelyFakeAI(PausingFakeAI):
-        def adapt(self, faithful_en, model, narrator_profile, previous_narration=""):
+        def adapt(self, faithful_en, model, narrator_profile, previous_narration="", runs=None):
             return NarrationAdaptation(narration_text="One sentence with no breaks at all")
 
     ai = LonelyFakeAI(timestamps_error=RuntimeError("no whisper"))
@@ -874,12 +944,12 @@ def test_regenerating_tts_with_shaping_off_keeps_the_voice_as_is(tmp_path):
 
 
 def test_an_empty_word_list_is_reported_as_a_warning(tmp_path):
-    class MuteFakeAI(PausingFakeAI):
+    class WordlessFakeAI(PausingFakeAI):
         def word_timestamps(self, _audio_path, _model):
             self.timestamp_calls += 1
             return []
 
-    ai = MuteFakeAI()
+    ai = WordlessFakeAI()
     pipeline, db, project_id = build_project(tmp_path, ai)
     job_id = start_job(db, project_id)
 
@@ -1080,3 +1150,468 @@ def test_choosing_elevenlabs_without_a_key_is_refused_loudly(tmp_path):
 
     with pytest.raises(RuntimeError):
         Pipeline(db, config)._elevenlabs_config()
+
+
+def test_a_text_only_job_reviews_the_script_without_voicing_anything(tmp_path):
+    ai = ProfilingFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai)
+    job_id = start_job(db, project_id, voice_stage=False)
+
+    pipeline.process_job(job_id)
+
+    segment = db.one("SELECT * FROM segments WHERE project_id=?", (project_id,))
+    assert ai.synthesis_calls == []
+    assert getattr(ai, "timestamp_calls", 0) == 0
+    # FakeAI's diarize gives this 1 s source a single narrator phrase, so it adapts over one run.
+    assert segment["narration_en"] == "Line 1."
+    assert segment["tts_audio_path"] is None and segment["tts_duration_ms"] is None
+    assert segment["qa_status"] == "passed" and "duration_ratio" not in segment["qa"]
+    assert db.one("SELECT status FROM jobs WHERE id=?", (job_id,))["status"] == "awaiting_review"
+    assert not db.all("SELECT id FROM model_calls WHERE job_id=? AND stage IN ('tts', 'alignment')", (job_id,))
+
+
+def test_script_parts_export_writes_marked_lines_around_recordings(tmp_path):
+    pipeline, db, project_id, job_id, ai, segments = run_recording_job(tmp_path)
+
+    written = pipeline.export_script_parts(project_id)
+
+    assert list(written) == ["01_narration.txt", "02_recording_segment002.wav", "03_narration.txt", "index.md"]
+    out_dir = Path(written["index.md"]).parent
+    assert out_dir.name == "script_parts" and out_dir.parent.name == "exports"
+    # Segment 1's single run ends at the recording with no measurable gap, but a sentence end always
+    # gets the 0.4 s floor; segments 3 and 4 each have one run, ending the same way.
+    assert Path(written["01_narration.txt"]).read_text(encoding="utf-8") == 'Line 1. <break time="0.4s" />\n'
+    assert Path(written["03_narration.txt"]).read_text(encoding="utf-8") == 'Line 1. <break time="0.4s" />\nLine 1.\n'
+    assert 10100 <= pipeline.audio.probe(Path(written["02_recording_segment002.wav"])).duration_ms <= 10500
+    index = Path(written["index.md"]).read_text(encoding="utf-8")
+    assert "`01_narration.txt`: narration, segment 1, source 0.0-19.9 s, target 19.9 s" in index
+    assert "`02_recording_segment002.wav`: kept recording, segment 2, source 19.9-30.1 s" in index
+    assert "`03_narration.txt`: narration, segments 3, 4, source 30.1-65.0 s" in index
+
+
+def test_script_parts_export_writes_measured_breaks(tmp_path):
+    ai = PhrasedFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai, seconds=65)
+    job_id = start_job(db, project_id)
+    pipeline.process_job(job_id)
+
+    written = pipeline.export_script_parts(project_id)
+
+    text = Path(written["01_narration.txt"]).read_text(encoding="utf-8")
+    assert text == 'Line 1. <break time="0.6s" />\nLine 2. <break time="0.4s" />\nLine 3. <break time="0.6s" />\nLine 1.\n'
+    assert "3 break marks" in Path(written["index.md"]).read_text(encoding="utf-8")
+
+
+def test_script_parts_export_is_refused_when_a_recording_has_no_audio(tmp_path):
+    import pytest
+
+    pipeline, db, project_id, job_id, ai, segments = run_recording_job(tmp_path)
+    db.execute("UPDATE segments SET tts_audio_path=NULL WHERE id=?", (segments[1]["id"],))
+
+    with pytest.raises(RuntimeError, match="no audio"):
+        pipeline.export_script_parts(project_id)
+
+
+def test_old_segments_without_lines_export_with_default_breaks(tmp_path):
+    pipeline, db, project_id, job_id, ai, segments = run_recording_job(tmp_path)
+    db.execute("UPDATE segments SET lines_json='[]', narration_en='Old one.\n\nOld two.' WHERE id=?", (segments[0]["id"],))
+
+    written = pipeline.export_script_parts(project_id)
+
+    assert Path(written["01_narration.txt"]).read_text(encoding="utf-8") == 'Old one. <break time="0.9s" />\nOld two. <break time="0.5s" />\n'
+
+
+def test_narrator_phrases_are_stored_per_narration_segment(tmp_path):
+    pipeline, db, project_id, job_id, ai, segments = run_recording_job(tmp_path)
+
+    assert segments[0]["phrases"] == [{"start_ms": 0, "end_ms": 19850, "text": SINHALA}]
+    assert segments[1]["phrases"] == []  # the kept recording
+    assert segments[2]["phrases"] == [{"start_ms": 30150, "end_ms": 45000, "text": SINHALA}]
+    assert segments[3]["phrases"] == [{"start_ms": 45000, "end_ms": 65000, "text": SINHALA}]
+    # The narrator's silence before the kept recording runs to the recorded voice at 20 s, not the padded piece edge.
+    assert segments[0]["lines"][0]["gap_after_ms"] == 150
+
+
+def test_runs_reach_the_adaptation_and_lines_carry_the_measured_breaks(tmp_path):
+    ai = PhrasedFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai, seconds=65)
+    job_id = start_job(db, project_id)
+
+    pipeline.process_job(job_id)
+
+    first, second = db.all("SELECT * FROM segments WHERE job_id=? ORDER BY segment_index", (job_id,))
+    assert ai.adapt_calls[0]["runs"] == ["A " + SINHALA + " B " + SINHALA, "C " + SINHALA, "D " + SINHALA]
+    assert first["narration_en"] == "Line 1.\n\nLine 2.\n\nLine 3."
+    lines = first["lines"]
+    assert [line["runs"] for line in lines] == [[1], [2], [3]]
+    assert [line["gap_after_ms"] for line in lines] == [600, 300, 600]  # 45300 (next segment's first phrase) - 44700
+    assert [line["break_s"] for line in lines] == [0.6, 0.4, 0.6]
+    assert lines[0]["start_ms"] == 0 and lines[0]["end_ms"] == 15000
+    assert second["lines"][0]["runs"] == [1] and second["lines"][0]["gap_after_ms"] == 0
+    # no measurable gap, but a sentence end always gets the 0.4 s floor
+    assert second["lines"][0]["break_s"] == 0.4
+    # the fake voice is 1 s long, so the duration check fails regardless; only the lines verdict matters here
+    assert "Script lines do not follow the spoken runs" not in first["qa"]["issues"]
+
+
+def test_lines_that_do_not_cover_the_runs_go_to_review(tmp_path):
+    ai = MisalignedFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai, seconds=65)
+    job_id = start_job(db, project_id)
+
+    pipeline.process_job(job_id)
+
+    first = db.one("SELECT * FROM segments WHERE job_id=? AND segment_index=1", (job_id,))
+    assert first["qa_status"] == "needs_review"
+    assert "Script lines do not follow the spoken runs" in first["qa"]["issues"]
+    assert [line["runs"] for line in first["lines"]] == [[1], [1, 2]]
+
+    pipeline.regenerate_segment(first["id"], "tts")
+
+    revoiced = db.one("SELECT * FROM segments WHERE id=?", (first["id"],))
+    assert revoiced["qa_status"] == "needs_review"
+    assert "Script lines do not follow the spoken runs" in revoiced["qa"]["issues"]
+
+
+def test_a_segment_without_phrases_adapts_as_a_passage_with_a_warning(tmp_path):
+    ai = ProfilingFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai)
+    job_id = start_job(db, project_id)
+
+    pipeline.process_job(job_id)
+
+    segment = db.one("SELECT * FROM segments WHERE job_id=?", (job_id,))
+    # FakeAI's sample-and-chunk spans give this 1 s source a narrator phrase 0-1000 ms, so phrases exist; switch detection off to get none.
+    assert ai.adapt_calls[0]["runs"] == [SINHALA_TEST]
+
+
+def test_detection_off_with_the_diarizer_source_means_no_phrases_and_no_warning_about_them(tmp_path):
+    ai = ProfilingFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai)
+    job_id = start_job(db, project_id, detect_recordings=False, pause_source="diarizer")
+
+    pipeline.process_job(job_id)
+
+    segment = db.one("SELECT * FROM segments WHERE job_id=?", (job_id,))
+    assert segment["phrases"] == [] and segment["lines"] == []
+    assert ai.adapt_calls[0]["runs"] is None
+    assert not any("spoken phrases" in w for w in db.one("SELECT * FROM jobs WHERE id=?", (job_id,))["warnings"])
+
+
+def test_regenerating_the_adaptation_uses_the_stored_phrases(tmp_path):
+    ai = PhrasedFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai, seconds=65)
+    job_id = start_job(db, project_id)
+    pipeline.process_job(job_id)
+    first = db.one("SELECT * FROM segments WHERE job_id=? AND segment_index=1", (job_id,))
+
+    pipeline.regenerate_segment(first["id"], "adaptation")
+
+    fresh = db.one("SELECT * FROM segments WHERE id=?", (first["id"],))
+    assert ai.adapt_calls[-1]["runs"] == ai.adapt_calls[0]["runs"]
+    assert [line["break_s"] for line in fresh["lines"]] == [0.6, 0.4, 0.6]
+
+
+class VadFakeAI(RecordingFakeAI):
+    """Voice detection that hears two turns in every file, 600 ms apart, where the diarizer heard one."""
+
+    def turns_for(self, name: str, duration_ms: int) -> list[dict]:
+        if name == "0002_source.pcm":
+            return [
+                {"start_ms": 200, "end_ms": 5000, "text": "E " + SINHALA},
+                {"start_ms": 5600, "end_ms": 20_200, "text": "F " + SINHALA},
+            ]
+        return [
+            {"start_ms": 0, "end_ms": 4000, "text": "A " + SINHALA},
+            {"start_ms": 4600, "end_ms": duration_ms, "text": "B " + SINHALA},
+        ]
+
+
+class MuteFakeAI(PhrasedFakeAI):
+    """The Realtime session answers but hears no speech at all."""
+
+    def turns_for(self, name, duration_ms):
+        return []
+
+
+class DeafFakeAI(PhrasedFakeAI):
+    """The Realtime session is unavailable, so the diarizer's narrator spans have to carry the breaks."""
+
+    def speech_turns(self, *_args, **_kwargs):
+        raise RuntimeError("realtime unavailable")
+
+
+class UntranscribedFakeAI(PhrasedFakeAI):
+    """Voice detection that timed every turn but transcribed none of them."""
+
+    def turns_for(self, name: str, duration_ms: int) -> list[dict]:
+        return [dict(turn, text="") for turn in super().turns_for(name, duration_ms)]
+
+
+def test_the_pause_map_is_heard_from_each_pieces_own_audio(tmp_path):
+    pipeline, db, project_id, job_id, ai, segments = run_recording_job(tmp_path, VadFakeAI())
+
+    # Segment 1 is cut as its own piece file, which starts exactly where the piece starts.
+    assert segments[0]["phrases"] == [
+        {"start_ms": 0, "end_ms": 4000, "text": "A " + SINHALA},
+        {"start_ms": 4600, "end_ms": 19_850, "text": "B " + SINHALA},
+    ]
+    # Segment 4 is the whole of chunk 2, whose file begins 200 ms before the chunk does.
+    assert segments[3]["phrases"] == [
+        {"start_ms": 45_000, "end_ms": 49_800, "text": "E " + SINHALA},
+        {"start_ms": 50_400, "end_ms": 65_000, "text": "F " + SINHALA},
+    ]
+    # Segment 3 is the piece after the recording, cut as its own file starting at 30150 ms.
+    assert segments[2]["phrases"] == [
+        {"start_ms": 30_150, "end_ms": 34_150, "text": "A " + SINHALA},
+        {"start_ms": 34_750, "end_ms": 45_000, "text": "B " + SINHALA},
+    ]
+    # The 600 ms the detection heard becomes the break; the last run runs up to the recorded voice.
+    assert [line["gap_after_ms"] for line in segments[0]["lines"]] == [600, 150]
+    assert all(call["segment_id"] for call in db.all("SELECT segment_id FROM model_calls WHERE stage='pause_map'"))
+    assert [call["path"].name for call in ai.turn_calls] == ["0001_piece.pcm", "0003_piece.pcm", "0002_source.pcm"]
+    assert {(call["threshold"], call["silence_ms"], call["model"]) for call in ai.turn_calls} == {(0.8, 200, "fake-turns")}
+    assert len(db.all("SELECT id FROM model_calls WHERE job_id=? AND stage='pause_map'", (job_id,))) == 3
+
+
+def test_the_pcm_copy_is_deleted_once_the_session_is_over(tmp_path):
+    pipeline, db, project_id, job_id, ai, segments = run_recording_job(tmp_path, VadFakeAI())
+
+    assert all(call["existed"] for call in ai.turn_calls)  # the session did get the audio
+    assert list(Path(segments[0]["source_audio_path"]).parent.glob("*.pcm")) == []
+
+
+def test_a_failed_pause_map_warns_and_falls_back_to_the_diarizers_phrases(tmp_path):
+    ai = DeafFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai, seconds=65)
+    job_id = start_job(db, project_id)
+
+    pipeline.process_job(job_id)
+
+    first = db.one("SELECT * FROM segments WHERE job_id=? AND segment_index=1", (job_id,))
+    assert [phrase["text"] for phrase in first["phrases"]] == [f"{letter} {SINHALA}" for letter in "ABCD"]
+    assert [line["break_s"] for line in first["lines"]] == [0.6, 0.4, 0.6]
+    warnings = db.one("SELECT * FROM jobs WHERE id=?", (job_id,))["warnings"]
+    assert any("Pause map unavailable for segment 1: realtime unavailable" in warning for warning in warnings)
+    assert db.one("SELECT status FROM jobs WHERE id=?", (job_id,))["status"] == "awaiting_review"
+    assert db.one("SELECT status FROM model_calls WHERE job_id=? AND stage='pause_map'", (job_id,))["status"] == "failed"
+
+
+def test_the_diarizer_source_keeps_the_old_phrases_and_opens_no_session(tmp_path):
+    ai = PhrasedFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai, seconds=65)
+    job_id = start_job(db, project_id, pause_source="diarizer")
+
+    pipeline.process_job(job_id)
+
+    first = db.one("SELECT * FROM segments WHERE job_id=? AND segment_index=1", (job_id,))
+    assert ai.turn_calls == []
+    assert [phrase["text"] for phrase in first["phrases"]] == [f"{letter} {SINHALA}" for letter in "ABCD"]
+    assert not db.all("SELECT id FROM model_calls WHERE job_id=? AND stage='pause_map'", (job_id,))
+
+
+def test_turns_nobody_transcribed_keep_the_pause_map_under_a_placeholder(tmp_path):
+    ai = UntranscribedFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai, seconds=65)
+    job_id = start_job(db, project_id)
+
+    pipeline.process_job(job_id)
+
+    first = db.one("SELECT * FROM segments WHERE job_id=? AND segment_index=1", (job_id,))
+    assert [phrase["text"] for phrase in first["phrases"]] == ["(speech)"] * 4
+    # The silences are the narrator's own even with nothing transcribed, so the runs survive.
+    assert ai.adapt_calls[0]["runs"] == ["(speech) (speech)", "(speech)", "(speech)"]
+    assert [line["break_s"] for line in first["lines"]] == [0.6, 0.4, 0.6]
+
+
+class GappyFakeAI(ProfilingFakeAI):
+    """The first pass over chunk 1 never hears the middle phrase; every later pass does, overlapping its neighbours."""
+
+    def diarize(self, audio_path, model, reference=None):
+        self.diarize_calls.append({"path": Path(audio_path), "reference": reference})
+        if reference is None:
+            return [{"speaker": "A", "start": 0.0, "end": 9.0, "text": SINHALA}]
+        if Path(audio_path).name != "0001_source.wav":
+            return [{"speaker": "narrator", "start": 0.2, "end": 20.2, "text": "E " + SINHALA}]
+        heard = [
+            {"speaker": "narrator", "start": 0.0, "end": 8.0, "text": "A " + SINHALA},
+            {"speaker": "narrator", "start": 30.0, "end": 44.7, "text": "D " + SINHALA},
+        ]
+        if len([call for call in self.diarize_calls if call["path"].name == "0001_source.wav"]) > 1:
+            heard.insert(1, {"speaker": "narrator", "start": 7.5, "end": 28.8, "text": "C " + SINHALA})
+        return heard
+
+
+class FlakyPassFakeAI(PhrasedFakeAI):
+    """The first pass over a chunk works; every extra pass over it raises."""
+
+    def diarize(self, audio_path, model, reference=None):
+        seen = [call for call in self.diarize_calls if call["path"] == Path(audio_path) and call["reference"] is not None]
+        if reference is not None and seen:
+            self.diarize_calls.append({"path": Path(audio_path), "reference": reference})
+            raise RuntimeError("diarizer busy")
+        return super().diarize(audio_path, model, reference)
+
+
+class SparseFakeAI(ProfilingFakeAI):
+    """Two short phrases in a 45 s chunk, whatever the pass: the narrator is mostly unheard."""
+
+    def diarize(self, audio_path, model, reference=None):
+        self.diarize_calls.append({"path": Path(audio_path), "reference": reference})
+        if reference is None:
+            return [{"speaker": "A", "start": 0.0, "end": 9.0, "text": SINHALA}]
+        if Path(audio_path).name != "0001_source.wav":
+            return [{"speaker": "narrator", "start": 0.2, "end": 20.2, "text": "E " + SINHALA}]
+        return [
+            {"speaker": "narrator", "start": 0.0, "end": 4.0, "text": "A " + SINHALA},
+            {"speaker": "narrator", "start": 40.0, "end": 44.0, "text": "D " + SINHALA},
+        ]
+
+
+    def turns_for(self, name: str, duration_ms: int) -> list[dict]:
+        if name == "0001_source.pcm":
+            return [
+                {"start_ms": 0, "end_ms": 4000, "text": "A " + SINHALA},
+                {"start_ms": 40_000, "end_ms": 44_000, "text": "D " + SINHALA},
+            ]
+        return [{"start_ms": 200, "end_ms": 20_200, "text": "E " + SINHALA}]
+
+
+def chunk_passes(ai) -> list[str]:
+    return [call["path"].name for call in ai.diarize_calls if call["reference"] is not None]
+
+
+def test_a_second_diarizer_pass_fills_the_stretch_the_first_one_missed(tmp_path):
+    ai = GappyFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai, seconds=65)
+    job_id = start_job(db, project_id, pause_source="diarizer")
+
+    pipeline.process_job(job_id)
+
+    first = db.one("SELECT * FROM segments WHERE job_id=? AND segment_index=1", (job_id,))
+    # The filled span is trimmed to what the first pass never heard: it starts where phrase A ended.
+    assert first["phrases"] == [
+        {"start_ms": 0, "end_ms": 8000, "text": "A " + SINHALA},
+        {"start_ms": 8000, "end_ms": 28800, "text": "C " + SINHALA},
+        {"start_ms": 30000, "end_ms": 44700, "text": "D " + SINHALA},
+    ]
+    # Without the fill the 22 s hole would read as a false 3.0 s pause after the first line.
+    assert [line["gap_after_ms"] for line in first["lines"]] == [1200, 300]
+    assert [line["break_s"] for line in first["lines"]] == [1.2, 0.4]
+    assert chunk_passes(ai) == ["0001_source.wav"] * 2 + ["0002_source.wav"] * 2
+
+
+def test_a_third_pass_runs_while_the_narrator_stays_thinly_covered(tmp_path):
+    # ProfilingFakeAI hears only 3 s of every chunk, so no pass brings the coverage up.
+    ai = ProfilingFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai, seconds=65)
+
+    pipeline.process_job(start_job(db, project_id))
+
+    assert chunk_passes(ai) == ["0001_source.wav"] * 3 + ["0002_source.wav"] * 3
+
+
+def test_a_failing_extra_pass_warns_and_keeps_the_first_passs_phrases(tmp_path):
+    ai = FlakyPassFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai, seconds=65)
+    job_id = start_job(db, project_id)
+
+    pipeline.process_job(job_id)
+
+    first = db.one("SELECT * FROM segments WHERE job_id=? AND segment_index=1", (job_id,))
+    assert [phrase["text"] for phrase in first["phrases"]] == [f"{letter} {SINHALA}" for letter in "ABCD"]
+    assert [line["break_s"] for line in first["lines"]] == [0.6, 0.4, 0.6]
+    warnings = db.one("SELECT * FROM jobs WHERE id=?", (job_id,))["warnings"] or []
+    assert any("Second diarizer pass failed on chunk 1: diarizer busy" in warning for warning in warnings)
+    assert not any("Third diarizer pass" in warning for warning in warnings)
+    assert db.one("SELECT status FROM jobs WHERE id=?", (job_id,))["status"] == "awaiting_review"
+
+
+def test_thinly_heard_phrases_cap_the_breaks_and_warn(tmp_path):
+    ai = SparseFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai, seconds=65)
+    job_id = start_job(db, project_id)
+
+    pipeline.process_job(job_id)
+
+    first, second = db.all("SELECT * FROM segments WHERE job_id=? ORDER BY segment_index", (job_id,))
+    assert [line["gap_after_ms"] for line in first["lines"]] == [36000, 1000]  # the measured silence is kept as it was
+    assert [line["break_s"] for line in first["lines"]] == [1.0, 1.0]
+    assert [line["coverage"] for line in first["lines"]] == [0.18, 0.18]
+    assert [line["coverage"] for line in second["lines"]] == [1.0]
+    warnings = db.one("SELECT * FROM jobs WHERE id=?", (job_id,))["warnings"] or []
+    assert "Phrases cover 18% of segment 1; breaks over 1.0 s capped" in warnings
+    assert not any("segment 2" in warning for warning in warnings if "Phrases cover" in warning)
+
+
+def test_full_phrase_coverage_leaves_the_measured_breaks_alone(tmp_path):
+    ai = PhrasedFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai, seconds=65)
+    job_id = start_job(db, project_id)
+
+    pipeline.process_job(job_id)
+
+    first = db.one("SELECT * FROM segments WHERE job_id=? AND segment_index=1", (job_id,))
+    assert [line["break_s"] for line in first["lines"]] == [0.6, 0.4, 0.6]
+    assert [line["coverage"] for line in first["lines"]] == [0.98, 0.98, 0.98]  # 43900 heard of the 44700 ms stretch
+    assert not any("Phrases cover" in warning for warning in db.one("SELECT * FROM jobs WHERE id=?", (job_id,))["warnings"] or [])
+
+
+def test_a_pause_map_that_heard_nothing_warns_and_keeps_the_diarizer_phrases(tmp_path):
+    ai = MuteFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai, seconds=65)
+    job_id = start_job(db, project_id)
+
+    pipeline.process_job(job_id)
+
+    first = db.one("SELECT * FROM segments WHERE job_id=? AND segment_index=1", (job_id,))
+    assert [p["start_ms"] for p in first["phrases"]] == [0, 8100, 15600, 30300]
+    warnings = db.one("SELECT * FROM jobs WHERE id=?", (job_id,))["warnings"]
+    assert any("Pause map heard no speech in segment 1" in w for w in warnings)
+
+
+def test_a_reviewers_script_edit_reaches_the_export_with_the_measured_breaks(tmp_path):
+    ai = PhrasedFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai, seconds=65)
+    job_id = start_job(db, project_id, voice_stage=False)
+    pipeline.process_job(job_id)
+    first = db.one("SELECT * FROM segments WHERE job_id=? AND segment_index=1", (job_id,))
+
+    pipeline.edit_script(first["id"], "Edited one.\n\nEdited two\n\nEdited three.")
+
+    edited = db.one("SELECT * FROM segments WHERE id=?", (first["id"],))
+    assert [line["text"] for line in edited["lines"]] == ["Edited one.", "Edited two", "Edited three."]
+    assert [line["runs"] for line in edited["lines"]] == [line["runs"] for line in first["lines"]]
+    assert [line["break_s"] for line in edited["lines"]] == [0.6, 0.3, 0.6]  # the line that lost its full stop drops to its measured 300 ms
+    written = pipeline.export_script_parts(project_id)
+    assert Path(written["01_narration.txt"]).read_text(encoding="utf-8").startswith('Edited one. <break time="0.6s" />\nEdited two <break time="0.3s" />\n')
+
+
+def test_a_reshaped_script_edit_drops_the_lines_and_exports_with_default_breaks(tmp_path):
+    ai = PhrasedFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai, seconds=65)
+    job_id = start_job(db, project_id, voice_stage=False)
+    pipeline.process_job(job_id)
+    first = db.one("SELECT * FROM segments WHERE job_id=? AND segment_index=1", (job_id,))
+
+    pipeline.edit_script(first["id"], "Now just one paragraph.")
+
+    assert db.one("SELECT * FROM segments WHERE id=?", (first["id"],))["lines"] == []
+    written = pipeline.export_script_parts(project_id)
+    assert Path(written["01_narration.txt"]).read_text(encoding="utf-8").startswith('Now just one paragraph. <break time="0.5s" />')
+
+
+def test_regenerating_a_text_only_segment_never_synthesizes(tmp_path):
+    ai = PhrasedFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai, seconds=65)
+    job_id = start_job(db, project_id, voice_stage=False)
+    pipeline.process_job(job_id)
+    first = db.one("SELECT * FROM segments WHERE job_id=? AND segment_index=1", (job_id,))
+    adaptations = len(ai.adapt_calls)
+
+    pipeline.regenerate_segment(first["id"], "tts")
+    assert ai.synthesis_calls == []
+    assert db.one("SELECT tts_audio_path FROM segments WHERE id=?", (first["id"],))["tts_audio_path"] is None
+
+    pipeline.regenerate_segment(first["id"], "adaptation")
+    assert len(ai.adapt_calls) == adaptations + 1 and ai.synthesis_calls == []

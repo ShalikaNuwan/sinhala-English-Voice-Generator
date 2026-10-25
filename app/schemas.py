@@ -24,8 +24,12 @@ class ProcessRequest(BaseModel):
     diarize_model: str | None = None
     detect_recordings: bool | None = None
     align_model: str | None = None
+    # "diarizer" takes the phrase times from the diarizer's narrator spans instead of the Realtime VAD.
+    pause_source: Literal["realtime", "diarizer"] | None = None
     shape_pauses: bool | None = None
     master_voice: bool | None = None
+    # False stops a job after the reviewed script: nothing is voiced, so the voice can be made elsewhere.
+    voice_stage: bool | None = None
     human_review_gate: bool = True
 
 
@@ -48,8 +52,17 @@ class FaithfulTranslation(BaseModel):
     uncertain_spans: list[str] = Field(default_factory=list)
 
 
+class ScriptLine(BaseModel):
+    text: str = Field(description="One line of the script, rendering the spoken run or runs it names.")
+    runs: list[int] = Field(default_factory=list, description="The 1-based numbers of the spoken runs this line renders, in order.")
+
+
 class NarrationAdaptation(BaseModel):
     narration_text: str = Field(description="The script to be spoken aloud, written for the ear.")
+    lines: list[ScriptLine] = Field(
+        default_factory=list,
+        description="The script as one line per spoken run, in order, when runs were given. Empty otherwise.",
+    )
     beat: Literal["setup", "build", "reveal", "aftermath", "reflection"] = Field(
         default="build",
         description="Where this passage sits in the story arc.",
