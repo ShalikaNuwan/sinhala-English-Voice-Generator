@@ -9,6 +9,7 @@ import build  # noqa: E402
 
 
 def test_library_shots_are_left_alone_and_only_gaps_are_sourced(monkeypatch, tmp_path):
+    monkeypatch.setattr(build.plan_edit, "FALLBACK_QUERY", "chicago 1970s street")   # the case's fallback search
     seen = []
 
     def fake_fill(shots, assets_dir, on_progress=None):

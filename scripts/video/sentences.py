@@ -27,7 +27,8 @@ from align_script import BREAK_TAG, normalise  # noqa: E402
 
 # A sentence ends at . ! ? or … , with any closing quote or bracket kept on it, before a space and the
 # start of the next sentence (a capital, a digit, or an opening quote).
-SENTENCE_END = re.compile(r"[.!?…][\"”’)\]]*(?=\s+[\"“‘(\[]?[A-Z0-9])")
+# A single capital before the stop is an initial ("Michael M. Marino"), not a sentence end.
+SENTENCE_END = re.compile(r"(?<!\b[A-Z])[.!?…][\"”’)\]]*(?=\s+[\"“‘(\[]?[A-Z0-9])")
 
 
 def _split(line: str) -> list[str]:

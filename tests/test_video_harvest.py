@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib.util
+import pytest
+import json
 import sys
 from pathlib import Path
 
@@ -19,6 +21,17 @@ def _load():
 
 
 harvest = _load()
+
+
+
+@pytest.fixture(autouse=True)
+def gacy_profile():
+    """The harvest tests run against the Gacy film's case profile (a copy kept in tests/fixtures)."""
+    sys.path.insert(0, str(MODULE_PATH.parent))
+    import case
+    harvest.use(case.CaseProfile(**json.loads((Path(__file__).parent / "fixtures" / "gacy_case.json").read_text())))
+    yield
+    harvest.use(None)
 
 
 def picture(size=(640, 480), shade=0):
@@ -349,3 +362,27 @@ def test_search_query_per_kind():
     assert q({"name": "Gregory John Godzik", "kind": "person", "query": "Gregory John Godzik"}) == "Gregory John Godzik Gacy"
     assert q({"name": "Rosalynn Carter", "kind": "person", "query": "Rosalynn Carter"}) == "Rosalynn Carter"
     assert q({"name": "Pogo the Clown", "kind": "object", "query": "John Wayne Gacy Pogo the Clown photograph"}) == "John Wayne Gacy Pogo the Clown photograph"
+
+
+def test_a_partial_harvest_adds_to_the_library_and_never_drops_what_is_there():
+    previous = {"c0001": {"id": "c0001", "caption": "kept"}, "w0002": {"id": "w0002", "caption": "kept too"}}
+    found = [{"id": "c0099", "caption": "new"}]
+    partial = harvest.merged_library(found, previous, partial=True)
+    assert [e["id"] for e in partial] == ["c0001", "c0099", "w0002"]
+    assert [e["id"] for e in harvest.merged_library(found, previous, partial=False)] == ["c0099"]
+
+
+def test_internet_archive_keeps_only_public_domain_and_cc0_images(monkeypatch):
+    def fake(url, params):
+        if "advancedsearch" in url:
+            return {"response": {"docs": [
+                {"identifier": "pd1", "title": "A 1970s pharmacy", "licenseurl": "http://creativecommons.org/publicdomain/mark/1.0/"},
+                {"identifier": "bysa", "title": "Pharmacy", "licenseurl": "https://creativecommons.org/licenses/by-sa/4.0/"},
+                {"identifier": "zero", "title": "Register", "licenseurl": "http://creativecommons.org/publicdomain/zero/1.0/"}]}}
+        return {"files": [{"name": "a.jpg", "format": "JPEG", "source": "original", "size": "900", "width": "1200", "height": "800"},
+                          {"name": "a_thumb.jpg", "format": "JPEG", "source": "derivative", "size": "90"}]}
+    monkeypatch.setattr(harvest, "fetch_json", fake)
+    found = harvest.archive_search("pharmacy 1970s")
+    assert [(f["url"].split("/")[-2], f["licence"], f["rights"]) for f in found] == [
+        ("pd1", "Public Domain Mark", "free"), ("zero", "CC0", "free")]
+    assert found[0]["url"].endswith("/a.jpg") and found[0]["width"] == 1200

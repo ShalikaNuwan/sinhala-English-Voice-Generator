@@ -61,7 +61,9 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import graphics  # noqa: E402
+import looks  # noqa: E402
 import motion  # noqa: E402
+import quote_cards  # noqa: E402
 
 # --- tools ------------------------------------------------------------------
 
@@ -99,10 +101,12 @@ FILL_TOLERANCE = 0.16  # aspect within this of 16:9 fills; 3:2 (35 mm, the commo
 PRINT_FIT = 0.84  # a print fits within this much of the frame height (or width, if wider than 16:9)
 PRINT_PUSH = 0.05  # the print's push-in over the whole shot: very slow
 PRINT_BORDER = "0xE9E6DF"  # the print's thin off-white border
-PRINT_DARKEN = 0.30  # the blurred ground behind a print, as a fraction of its own brightness
+# The ground behind a print: the photograph itself, blurred and darkened almost to black, so it reads as one
+# quiet toned mat across the film rather than a second copy of the picture competing with it.
+PRINT_DARKEN = 0.13
 # A small archival scan is shown smaller, not blown up: a 181x255 newspaper portrait stretched to the
 # full print size turns to mush. On screen a print is never more than this many times its own pixels.
-PRINT_MAX_UPSCALE = 2.2
+PRINT_MAX_UPSCALE = 3.0
 # With a name card or a date stamp on screen, a print moves into the frame's right-hand part, so the
 # lower-left text never runs into its border: this fraction of the width is kept clear for the text.
 PRINT_OVERLAY_CLEAR = 0.40
@@ -156,23 +160,40 @@ SUBTITLE_FONT = "Helvetica Neue"
 # forced to true greyscale first, then given only a faint cool tone, so an old print never picks up
 # a colour cast from the colour grade. Grain goes on last, over everything, in the final encode.
 
-COLOUR_GRADE = (
-    "eq=contrast=1.06:saturation=0.85,"
-    "colorbalance=rs=-0.03:gs=-0.01:bs=0.045:rm=-0.02:bm=0.02:rh=-0.01:bh=0.005,"
-    "curves=all='0/0 0.06/0.015 0.25/0.22 0.5/0.50 0.8/0.81 1/0.96'"
-)
-BW_GRADE = (
-    "format=gray,format=rgb24,"
-    "curves=all='0/0 0.06/0.015 0.25/0.22 0.5/0.50 1/0.97',"
-    "colorbalance=rs=-0.015:bs=0.025:rm=-0.01:bm=0.018"
-)
+# The storyboard may give a scene another look (looks.py); this is the film's home look, `investigation`.
+COLOUR_GRADE = looks.INVESTIGATION_COLOUR
+BW_GRADE = looks.INVESTIGATION_BW
 VIGNETTE = "vignette=angle=PI/7:eval=init"
 GRAIN = "noise=c0s=4:c0f=t"  # luma only, renewed every frame: seen on a dark wall at 100%, not at a glance
 
 
-def grade_filter(mode: str) -> str:
-    """The colour treatment for a grade mode: 'colour', 'bw', or 'none' for drawn shots."""
-    return {"colour": COLOUR_GRADE, "bw": BW_GRADE}.get(mode, "")
+def use_draft() -> None:
+    """Fast, light settings for a review animatic: never for the film itself."""
+    global INTERMEDIATE_PRESET, INTERMEDIATE_CRF, FINAL_PRESET, FINAL_CRF, FINAL_TUNE, GRAIN
+    INTERMEDIATE_PRESET, INTERMEDIATE_CRF = "ultrafast", 26
+    FINAL_PRESET, FINAL_CRF, FINAL_TUNE, GRAIN = "ultrafast", 30, "fastdecode", "null"
+
+
+def grade_filter(mode: str, look: str = "investigation") -> str:
+    """The colour treatment for a grade mode ('colour', 'bw', or 'none' for drawn shots) in a look."""
+    return looks.grade(mode, look)
+
+
+QUOTE_CLEAR = 0.50   # a speech card holds the right half of the frame; the print moves into the left
+
+
+def carded(shot: dict) -> bool:
+    """Whether a quote card in the card or memorial style will hold the right of this shot's frame."""
+    return any((q.get("style") or "card") in ("card", "memorial") for q in shot.get("quotes") or [])
+
+
+def finish_chain(shot: dict, mode: str, width: int, height: int) -> str:
+    """What the moving frame gets before any overlay: the look's vignette, then the shot's effects."""
+    parts = [looks.vignette(looks.look_of(shot))] if mode != "none" else []
+    fx = looks.effect_chain(shot.get("effects"), width, height)
+    if fx:
+        parts.append(fx)
+    return ",".join(parts) or "null"
 
 
 def is_monochrome(path) -> bool:
@@ -259,7 +280,7 @@ def fill_chain(motion: str, frames: int, width: int, height: int, fps: int) -> s
 
 
 def print_chain(src_w: int, src_h: int, frames: int, width: int, height: int, fps: int,
-                src: str = "[src]", out: str = "[pic]", clear_left: float = 0.0) -> str:
+                src: str = "[src]", out: str = "[pic]", clear_left: float = 0.0, clear_right: float = 0.0) -> str:
     """The whole photograph as an object: centred, bordered, shadowed, over a blurred copy of itself.
 
     The ground is the same picture scaled to cover the frame, heavily blurred and darkened. The
@@ -274,10 +295,14 @@ def print_chain(src_w: int, src_h: int, frames: int, width: int, height: int, fp
     if src_w > 0 and src_h > 0:
         fit_w = min(fit_w, _even(src_w * PRINT_MAX_UPSCALE * SUPERSAMPLE))
         fit_h = min(fit_h, _even(src_h * PRINT_MAX_UPSCALE * SUPERSAMPLE))
-    # The print is centred in the part of the frame left free: all of it, or the right-hand part
-    # when an overlay holds the lower left.
-    region_x = _even(box_w * clear_left) if clear_left > 0 else 0
-    region_w = box_w - region_x - (_even(box_w * PRINT_RIGHT_MARGIN) if clear_left > 0 else 0)
+    # The print is centred in the part of the frame left free: all of it, the right-hand part when an
+    # overlay holds the lower left, or the left-hand part when a quote card holds the right.
+    if clear_right > 0:
+        region_x = _even(box_w * PRINT_RIGHT_MARGIN)
+        region_w = box_w - region_x - _even(box_w * clear_right)
+    else:
+        region_x = _even(box_w * clear_left) if clear_left > 0 else 0
+        region_w = box_w - region_x - (_even(box_w * PRINT_RIGHT_MARGIN) if clear_left > 0 else 0)
     fit_w = min(fit_w, _even(region_w * 0.96))
     place_x = f"{region_x}+({region_w}-w)/2"
     border = max(2, round(box_h * 0.0028))
@@ -409,7 +434,7 @@ def moving_inputs(path, timing: dict) -> list[str]:
     return argv
 
 
-def moving_chain(timing: dict, mode: str, width: int, height: int, fps: int) -> str:
+def moving_chain(timing: dict, mode: str, width: int, height: int, fps: int, look: str = "investigation") -> str:
     """Footage (or a motion graphic) into the frame: [0:v] (and [1:v], the reversed tail) to [pic].
 
     Deinterlaced where the source is interlaced; the reversed tail drops its first frame, which
@@ -426,7 +451,7 @@ def moving_chain(timing: dict, mode: str, width: int, height: int, fps: int) -> 
         parts.append(f"[1:v]{deint},reverse,trim=start_frame=1,setpts=PTS-STARTPTS[bwd]")
         parts.append("[fwd][bwd]concat=n=2:v=1:a=0[run]")
         source = "[run]"
-    grade = grade_filter(mode)
+    grade = grade_filter(mode, look)
     hold = "stop=-1" if timing.get("hold") else f"stop={CLIP_GUARD_FRAMES}"
     parts.append(
         f"{source}setpts={timing['stretch']:.4f}*PTS,fps={fps},"
@@ -684,7 +709,7 @@ def image_size(path) -> tuple[int, int]:
 
 
 def shot_clip(shot: dict, clip: dict, still, out_path, width: int, height: int, fps: int, *,
-              overlay=None) -> list[str]:
+              overlay=None, quote=None) -> list[str]:
     """The ffmpeg argv that renders one shot, tail included, to a silent intermediate.
 
     A photograph is read once; the treatment expands it to every frame. The grade is applied to the
@@ -692,33 +717,42 @@ def shot_clip(shot: dict, clip: dict, still, out_path, width: int, height: int, 
     any fade to or from black, so a dip takes the overlay down with the picture. A clip or motion
     shot (`still` is then the footage file) takes its timing from `clip["timing"]` and whether it
     is black-and-white from `clip["mono"]`, both worked out by `render`. An overlay is a still PNG,
-    or a .mov with alpha for a stamp that types itself.
+    or a .mov with alpha for a stamp that types itself. A `quote` is a quote card .mov (quote_cards.py)
+    the length of the shot, laid over everything with its own fades.
     """
     total = clip["frames"] + clip["tail"]
+    look = looks.look_of(shot)
     parts = []
     media = clip.get("media") or media_of(shot)
     if still is not None and media in ("clip", "motion"):
         timing = clip["timing"]
         mode = grade_mode(shot, monochrome=bool(clip.get("mono")))
         source = moving_inputs(still, timing)
-        parts.append(moving_chain(timing, mode, width, height, fps))
-        parts.append(f"[pic]{VIGNETTE if mode != 'none' else 'null'}[base]")
+        parts.append(moving_chain(timing, mode, width, height, fps, look))
+        parts.append(f"[pic]{finish_chain(shot, mode, width, height)}[base]")
     elif still is not None:
         still = Path(still)
         size = image_size(still)
+        crop = ""
+        if shot.get("crop"):                 # a reframe: run only the located part of the photograph
+            x0, y0, x1, y1 = shot["crop"]
+            cw, ch = _even(size[0] * (x1 - x0)), _even(size[1] * (y1 - y0))
+            crop = f"crop={cw}:{ch}:{round(size[0] * x0)}:{round(size[1] * y0)},"
+            size = (cw, ch)
         treatment = choose_treatment(shot, size)
         mono = shot.get("colour") is None and shot.get("kind") not in DRAWN_KINDS and is_monochrome(still)
         mode = grade_mode(shot, monochrome=mono)
         source = ["-i", str(still)]
-        parts.append(f"[0:v]format=rgb24{',' + grade_filter(mode) if mode != 'none' else ''}[src]")
+        parts.append(f"[0:v]{crop}format=rgb24{',' + grade_filter(mode, look) if mode != 'none' else ''}[src]")
         if treatment == "print":
             parts.append(print_chain(size[0], size[1], total, width, height, fps,
-                                     clear_left=PRINT_OVERLAY_CLEAR if overlay else 0.0))
+                                     clear_left=PRINT_OVERLAY_CLEAR if overlay and not carded(shot) else 0.0,
+                                     clear_right=QUOTE_CLEAR if carded(shot) else 0.0))
         elif treatment == "pan":
             parts.append(f"[src]{pan_chain(size[0], size[1], total, width, height, fps)}[pic]")
         else:
             parts.append(f"[src]{fill_chain(shot.get('motion') or 'still', total, width, height, fps)}[pic]")
-        parts.append(f"[pic]{VIGNETTE if mode != 'none' else 'null'}[base]")
+        parts.append(f"[pic]{finish_chain(shot, mode, width, height)}[base]")
     else:  # nothing was sourced and nothing to hold: the film's own dark ground
         source = ["-f", "lavfi", "-i", f"color=c={BACKDROP}:s={width}x{height}:r={fps}"]
         parts.append("[0:v]setsar=1[base]")
@@ -738,6 +772,12 @@ def shot_clip(shot: dict, clip: dict, still, out_path, width: int, height: int, 
             parts.append(f"[{index}:v]format=rgba,{fades}[ov]")
             parts.append("[base][ov]overlay=0:0:shortest=1:format=auto[comp]")
         current = "comp"
+    if quote is not None:
+        index = source.count("-i")
+        source += ["-i", str(quote)]
+        parts.append(f"[{index}:v]format=rgba,setpts=PTS-STARTPTS[qv]")
+        parts.append(f"[{current}][qv]overlay=0:0:eof_action=pass:format=auto[quoted]")
+        current = "quoted"
     finish = []
     if clip["fade_in"]:
         finish.append(f"fade=t=in:s=0:n={clip['fade_in']}")
@@ -795,7 +835,7 @@ def resolve_asset(base: Path, asset) -> Path | None:
     return path if path.is_absolute() else base / path
 
 
-LOOK = json.dumps([COLOUR_GRADE, BW_GRADE, VIGNETTE, SUPERSAMPLE, ZOOM_TRAVEL, PRINT_FIT, PRINT_PUSH,
+LOOK = json.dumps([looks.GRADES, looks.VIGNETTES, looks.effect_chain(list(looks.EFFECTS), 16, 9), COLOUR_GRADE, BW_GRADE, VIGNETTE, SUPERSAMPLE, ZOOM_TRAVEL, PRINT_FIT, PRINT_PUSH,
                    PRINT_BORDER, PRINT_DARKEN, PRINT_MAX_UPSCALE, PRINT_OVERLAY_CLEAR, PRINT_RIGHT_MARGIN,
                    PAN_FIT, INTERMEDIATE_PRESET, INTERMEDIATE_CRF, TO_BT709, CLIP_GUARD_FRAMES,
                    TYPED_OUT_BY, 5])
@@ -812,7 +852,7 @@ def _file_key(path) -> list | None:
     return [str(path), stat.st_size, stat.st_mtime_ns]
 
 
-def shot_key(shot: dict, clip: dict, still, overlay, width: int, height: int, fps: int) -> list:
+def shot_key(shot: dict, clip: dict, still, overlay, width: int, height: int, fps: int, quote=None) -> list:
     """Everything that shapes a shot's intermediate: change any of it and the shot re-renders.
 
     The picture or footage file (path, size, modification time), the shot fields that steer its
@@ -820,11 +860,12 @@ def shot_key(shot: dict, clip: dict, still, overlay, width: int, height: int, fp
     it, its frames, tail and fades, the overlay file, the frame, and the look.
     """
     return [_file_key(still),
-            {k: shot.get(k) for k in ("kind", "treatment", "kind_hint", "motion", "colour")},
+            {k: shot.get(k) for k in ("kind", "treatment", "kind_hint", "motion", "colour", "look", "effects", "crop")},
+            carded(shot),
             {"media": clip.get("media") or media_of(shot), "clip_in": shot.get("clip_in"),
              "clip_out": shot.get("clip_out"), "timing": clip.get("timing"), "mono": clip.get("mono")},
             {k: clip[k] for k in ("frames", "tail", "fade_in", "fade_out")}, _file_key(overlay),
-            width, height, fps, LOOK]
+            width, height, fps, LOOK] + ([_file_key(quote)] if quote is not None else [])
 
 
 def make_overlay(card: dict, duration: float, folder: Path, width: int, height: int, fps: int) -> Path:
@@ -943,19 +984,26 @@ def render(shots_path, out_path, *, subtitles=None, limit=None, start_index=None
     for shot, clip in zip(chosen, plan):
         still = pictures[shot["index"]][0]
         overlay = None
-        card = shot.get("overlay")
+        quote = None
+        # A quote card owns the frame's text while it is up: the shot's date or name label stands down.
+        card = None if shot.get("quotes") else shot.get("overlay")
         animated = is_animated(card)
         duration = clip["frames"] / fps
+        if shot.get("quotes"):
+            try:
+                quote = quote_cards.make(shot, clip["frames"] + clip["tail"], work / "quotes", width, height, fps)
+            except Exception as exc:  # noqa: BLE001 - a card that cannot be drawn must not stop the film
+                print(f"  WARNING: shot #{shot['index']} quote card skipped: {exc}", flush=True)
         if card and overlay_fades(duration, TYPED_OUT_BY if animated else OVERLAY_OUT_BY):
             try:
                 overlay = make_overlay(card, duration, work / "overlays", width, height, fps)
             except ValueError as exc:
                 print(f"  WARNING: shot #{shot['index']} overlay skipped: {exc}", flush=True)
                 overlay = None
-        key = shot_key(shot, clip, still, overlay, width, height, fps)
+        key = shot_key(shot, clip, still, overlay, width, height, fps, quote)
         clip["path"] = (work / f"shot_{shot['index']:04d}_{_digest(key)}.mp4").resolve()
         clip["shot"] = shot
-        clip["still"], clip["overlay"] = still, overlay
+        clip["still"], clip["overlay"], clip["quote"] = still, overlay, quote
 
     lines = []
     if mode == "burn":
@@ -1012,7 +1060,8 @@ def render(shots_path, out_path, *, subtitles=None, limit=None, start_index=None
 
     def render_shot(clip):
         partial = clip["path"].with_suffix(".part.mp4")
-        run(shot_clip(clip["shot"], clip, clip["still"], partial, width, height, fps, overlay=clip["overlay"]))
+        run(shot_clip(clip["shot"], clip, clip["still"], partial, width, height, fps, overlay=clip["overlay"],
+                      quote=clip.get("quote")))
         partial.replace(clip["path"])
         return clip
 

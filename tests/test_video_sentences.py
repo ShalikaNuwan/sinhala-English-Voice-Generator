@@ -43,3 +43,8 @@ def test_a_time_inside_a_shortened_pause_lands_proportionally_in_the_new_cut():
     assert sentences.map_time(5.0, points) == 3.0
     assert sentences.map_time(15.0, points) == 9.0
     assert sentences.map_time(25.0, points) == 17.0  # past the end: carried at the same rate as the tail
+
+
+def test_a_middle_initial_does_not_end_a_sentence():
+    assert sentences.script_sentences("Michael M. Marino, 14 years old, on October 24th. William Bundy, 19.") == [
+        "Michael M. Marino, 14 years old, on October 24th.", "William Bundy, 19."]

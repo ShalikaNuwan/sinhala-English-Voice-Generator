@@ -290,7 +290,8 @@ def test_a_map_demoted_by_an_old_rule_is_restored_and_maps_are_spaced():
     assert [s["kind"] for s in shots] == ["map", "period", "period"]  # too soon; then too long
 
 
-def test_the_board_returns_at_a_scene_change_with_what_the_film_has_established():
+def test_the_board_returns_at_a_scene_change_with_what_the_film_has_established(monkeypatch):
+    monkeypatch.setattr(plan_edit, "CASE_KEYWORD", "gacy")   # case.json keyword
     library = {i: item(i) for i in ("gacy", "piest", "diagram", "card", "street")}
     shots = [
         shot(1, start=0, end=8, kind="profile", subject_id="gacy",
@@ -309,7 +310,8 @@ def test_the_board_returns_at_a_scene_change_with_what_the_film_has_established(
 
 
 
-def test_the_board_leaves_out_other_killers_scenery_repeats_and_the_outro():
+def test_the_board_leaves_out_other_killers_scenery_repeats_and_the_outro(monkeypatch):
+    monkeypatch.setattr(plan_edit, "CASE_KEYWORD", "gacy")   # case.json keyword
     library = {i: item(i) for i in ("gacy", "piest", "corll", "card", "postcard", "a", "b", "c")}
     profile = lambda n, sid, name, role: shot(n, start=n * 10.0, end=n * 10.0 + 8, kind="profile", subject_id=sid,
                                               fields=[{"label": "NAME", "value": name}, {"label": "ROLE", "value": role}])

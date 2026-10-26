@@ -744,8 +744,8 @@ def test_a_dissolve_across_a_group_boundary_renders_frame_exact(tmp_path, monkey
 def test_a_small_print_is_held_to_its_maximum_enlargement():
     small = assemble.print_chain(181, 255, 90, 1920, 1080, 30)
     large = assemble.print_chain(1505, 2000, 90, 1920, 1080, 30)
-    # 255 px tall, at most 2.2x on screen, composed at 2x: a box no taller than 1122 canvas pixels.
-    assert "scale=796:1122:" in small
+    # 255 px tall, at most 3x on screen, composed at 2x: a box no taller than 1530 canvas pixels.
+    assert "scale=1086:1530:" in small
     assert "scale=3226:1814:" in large
 
 
@@ -1020,3 +1020,67 @@ def test_a_render_resumed_after_cleanup_draws_only_the_shots_of_groups_not_yet_j
     redrawn = sorted(p.name.split("_")[1] for p in (base / "work").glob("shot_*.mp4"))
     assert redrawn == ["0004", "0005"]  # the last group (#5) and its dissolve lead-in (#4)
     assert int(probe(tmp_path / "second.mp4", "stream=nb_frames").splitlines()[0].split("=")[1]) == 90
+
+
+# --- storyboard looks, effects and quote cards ------------------------------------
+
+def test_a_shot_is_graded_in_its_scenes_look(tmp_path):
+    asset = still(tmp_path / "0001.jpg")
+    home = assemble.shot_clip(shot(colour="colour"), clip_plan(), asset, tmp_path / "a.mp4", 640, 360, FPS)
+    reveal = assemble.shot_clip(shot(colour="colour", look="revelation"), clip_plan(), asset, tmp_path / "b.mp4", 640, 360, FPS)
+    memorial = assemble.shot_clip(shot(colour="colour", look="memorial"), clip_plan(), asset, tmp_path / "c.mp4", 640, 360, FPS)
+    graph = lambda argv: argv[argv.index("-filter_complex") + 1]
+    assert assemble.COLOUR_GRADE in graph(home) and "colorhold" not in graph(home)
+    assert "colorhold" in graph(reveal)
+    assert "format=gray" in graph(memorial)            # a memorial is black and white even for a colour photograph
+
+
+def test_a_shots_effects_run_after_its_vignette_and_before_any_fade(tmp_path):
+    asset = still(tmp_path / "0001.jpg")
+    argv = assemble.shot_clip(shot(effects=["flash", "shake"], look="revelation"), clip_plan(fade_in=10), asset,
+                              tmp_path / "a.mp4", 640, 360, FPS)
+    graph = argv[argv.index("-filter_complex") + 1]
+    assert graph.index("vignette") < graph.index("crop=w=iw-") < graph.index("color=white") < graph.index("fade=t=in:s=0")
+
+
+def test_finish_chain_is_a_pass_through_for_a_drawn_shot_without_effects():
+    assert assemble.finish_chain({}, "none", 640, 360) == "null"
+    assert assemble.finish_chain({"look": "cold_dread"}, "colour", 640, 360) == assemble.looks.vignette("cold_dread")
+
+
+def test_a_quote_card_is_laid_over_everything_and_plays_with_its_own_fades(tmp_path):
+    asset = still(tmp_path / "0001.jpg")
+    card = tmp_path / "quote.mov"
+    card.write_bytes(b"")
+    argv = assemble.shot_clip(shot(), clip_plan(fade_out=10), asset, tmp_path / "a.mp4", 640, 360, FPS, quote=card)
+    graph = argv[argv.index("-filter_complex") + 1]
+    assert str(card) in argv
+    assert "[qv]overlay=0:0:eof_action=pass" in graph
+    assert graph.index("[qv]overlay") < graph.index("fade=t=out")
+
+
+def test_a_changed_look_or_effect_renders_the_shot_again(tmp_path):
+    asset = still(tmp_path / "0001.jpg")
+    base = assemble.shot_key(shot(), clip_plan(), asset, None, 640, 360, FPS)
+    assert assemble.shot_key(shot(look="revelation"), clip_plan(), asset, None, 640, 360, FPS) != base
+    assert assemble.shot_key(shot(effects=["flash"]), clip_plan(), asset, None, 640, 360, FPS) != base
+
+
+def test_a_print_under_a_speech_card_moves_into_the_left_of_the_frame(tmp_path):
+    asset = still(tmp_path / "0001.jpg", size=(360, 480))                 # a portrait: shown as a print
+    plain = assemble.shot_clip(shot(), clip_plan(), asset, tmp_path / "a.mp4", 640, 360, FPS)
+    carded = assemble.shot_clip(shot(quotes=[{"style": "card"}]), clip_plan(), asset, tmp_path / "b.mp4", 640, 360, FPS,
+                                quote=tmp_path / "q.mov")
+    graph = lambda argv: argv[argv.index("-filter_complex") + 1]
+    assert "overlay=0+(" in graph(plain) and "overlay=0+(" not in graph(carded)
+    assert assemble.carded(shot(quotes=[{"style": "exhibit"}])) is False
+
+
+def test_a_reframed_shot_runs_only_its_located_crop_and_is_treated_by_the_crops_shape(tmp_path):
+    asset = still(tmp_path / "0001.jpg", size=(640, 360))
+    argv = assemble.shot_clip(shot(crop=[0.25, 0.0, 0.5, 1.0]), clip_plan(), asset, tmp_path / "a.mp4", 640, 360, FPS)
+    graph = argv[argv.index("-filter_complex") + 1]
+    assert graph.startswith("[0:v]crop=160:360:160:0,format=rgb24")
+    assert "pad=" in graph                          # a tall crop of a wide photograph is shown as a print
+    assert assemble.shot_key(shot(crop=[0, 0, 1, 1]), clip_plan(), asset, None, 640, 360, FPS) != \
+        assemble.shot_key(shot(), clip_plan(), asset, None, 640, 360, FPS)

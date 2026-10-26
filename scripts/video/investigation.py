@@ -1267,7 +1267,7 @@ def highlight(photo, box, out_path, seconds: float, label: str | None = None, sh
 
 # --- locate ------------------------------------------------------------------------
 
-LOCATE_CACHE = ROOT / "data" / "video" / "gacy" / "locate_cache.json"
+LOCATE_CACHE = ROOT / "data" / "video" / "locate_cache.json"   # keyed by file hash: shared by every film
 LOCATE_MAX_SIDE = 1536
 LOCATE_MIN_SIDE = 1024   # a small scan is enlarged for the model, so its lettering can be read
 VERIFY_MARGIN = 0.20     # of the box's own size, added round the crop the second call sees

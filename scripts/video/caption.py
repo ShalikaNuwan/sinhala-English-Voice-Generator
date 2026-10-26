@@ -1,6 +1,6 @@
 """Describe every library picture with a vision model, so the planner can choose by content.
 
-    .venv/bin/python scripts/video/caption.py data/video/gacy [--model gpt-6-sol] [--workers 6] [--redo]
+    .venv/bin/python scripts/video/caption.py <video_dir> [--model gpt-6-sol] [--workers 6] [--redo]
 
 Fills caption, subjects, places, era, colour, kind, graphic and quality for each item in
 library.json that has no caption yet. Resumable: library.json is rewritten atomically after every
@@ -32,9 +32,9 @@ CAPTION_FIELDS = ("caption", "subjects", "places", "era", "colour", "kind", "gra
 FALLBACK_MODELS = ("gpt-5.5", "gpt-4.1")
 MAX_SIDE = 1024
 
-SYSTEM = (
-    "You catalogue archival pictures for a true-crime documentary about John Wayne Gacy (Chicago and "
-    "its north-west suburbs, 1960s-1994). Describe exactly what is visible. caption: one factual "
+SYSTEM_TEMPLATE = (
+    "You catalogue archival pictures for a true-crime documentary about {case}. Describe exactly what is "
+    "visible. caption: one factual "
     "sentence saying what the picture shows (who or what, where, when if known). subjects: named "
     "people visibly shown, only when the title, filename or source makes their identity clear; never "
     "guess who a face belongs to; empty when unsure. places: named places shown or clearly the "
@@ -94,6 +94,17 @@ def context_text(item: dict) -> str:
     )
 
 
+SYSTEM = SYSTEM_TEMPLATE.format(case="a criminal case")
+
+
+def use_case(video_dir: Path) -> None:
+    """Name the film's case in the prompt (case.json), so captions place pictures in its story."""
+    global SYSTEM
+    import case
+    if case.path_of(video_dir).exists():
+        SYSTEM = SYSTEM_TEMPLATE.format(case=case.brief(case.load(video_dir)))
+
+
 def describe(client, model: str, item: dict, root: Path) -> dict:
     response = client.responses.parse(
         model=model,
@@ -138,6 +149,7 @@ def main() -> None:
     from openai import OpenAI
 
     root = Path(args.video_dir)
+    use_case(root)
     path = root / "library.json"
     items = json.loads(path.read_text(encoding="utf-8"))["items"]
     todo = pending(items, redo=args.redo)

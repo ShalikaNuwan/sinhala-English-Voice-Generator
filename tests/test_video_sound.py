@@ -123,13 +123,14 @@ def test_drones_are_rare_and_spaced():
 
 def test_gacy_reveals_match_the_script():
     plan = json.loads((ROOT / "data" / "video" / "gacy" / "shots.json").read_text(encoding="utf-8"))
-    drones = of(sound.events_from_shots(plan["shots"]), "drone")
+    reveals = json.loads((Path(__file__).parent / "fixtures" / "gacy_case.json").read_text())["reveals"]
+    drones = of(sound.events_from_shots(plan["shots"], reveals=reveals), "drone")
     assert [e["shot"] for e in drones] == [8, 376, 399, 573, 624]
 
 
 def test_events_are_sorted_and_reasoned():
     shots = [shot(1, 0.0), shot(2, 66.88, transition="black", narration="the remains of twenty-nine boys")]
-    events = sound.events_from_shots(shots)
+    events = sound.events_from_shots(shots, reveals=[("cold open", "remains of twenty-nine")])
     assert [e["t"] for e in events] == sorted(e["t"] for e in events)
     assert all(e["reason"] for e in events)
 
@@ -327,3 +328,11 @@ def test_bed_ducks_under_speech_and_returns_in_pauses(tmp_path):
     assert numbers["gain_reduction_speech_db"] < -8
     assert numbers["gain_reduction_pause_db"] > -1
     assert numbers["gain_reduction_speech_sd"] < 2  # steady under speech: no pumping
+
+
+
+def test_without_listed_reveals_the_storyboards_revelation_scenes_get_the_drones():
+    shots = [dict(shot(1, 0.0), scene=1, intensity=4), dict(shot(2, 200.0), scene=2, look="revelation"),
+             dict(shot(3, 210.0), scene=2, look="revelation"), dict(shot(4, 500.0), scene=3, intensity=9)]
+    drones = of(sound.events_from_shots(shots), "drone")
+    assert [(e["shot"], e["reason"]) for e in drones] == [(2, "reveal: scene 2"), (4, "reveal: scene 3")]
