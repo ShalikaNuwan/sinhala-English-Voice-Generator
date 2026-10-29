@@ -1,8 +1,10 @@
 """Find short real video clips to cut between the photographs, and describe their usable seconds.
 
-    .venv/bin/python scripts/video/footage.py search   data/video/gacy
-    .venv/bin/python scripts/video/footage.py build    data/video/gacy [--budget-gb 1] [--workers 3]
-    .venv/bin/python scripts/video/footage.py generate data/video/gacy "snow past a streetlight" --seconds 4
+    .venv/bin/python scripts/video/footage.py search   <video_dir>
+    .venv/bin/python scripts/video/footage.py build    <video_dir> [--budget-gb 1] [--workers 3]
+    .venv/bin/python scripts/video/footage.py generate <video_dir> "snow past a streetlight" --seconds 4
+
+What footage the story needs (region, era, settings, the searches) comes from <video_dir>/case.json.
 
 search: queries the Internet Archive and Wikimedia Commons (and the US National Archives catalogue,
 when its API answers without a key) for period footage this story needs, keeps only films whose
@@ -76,7 +78,25 @@ MAX_SOURCE_BYTES = 220_000_000  # one film; anything bigger is skipped rather th
 DEFAULT_BUDGET_BYTES = 1_000_000_000
 DISK_RESERVE_BYTES = 600_000_000  # never let a download take the disk below this
 FRAMES_PER_REQUEST = 10
-LATEST_YEAR = 1995  # footage dated after this cannot show the period
+# The case (its region, era, the b-roll it needs and the searches that find it) comes from the film's
+# case.json (case.py); `use(profile)` sets it for this run.
+PROFILE = None
+
+
+def use(profile) -> None:
+    global PROFILE
+    PROFILE = profile
+
+
+def profile():
+    if PROFILE is None:
+        raise RuntimeError("no case profile: call footage.use(case.load(video_dir)) first")
+    return PROFILE
+
+
+def latest_year() -> int:
+    """Footage dated after this cannot show the period."""
+    return profile().footage_years[-1] + 1
 
 VIDEO_SECONDS = (4, 8, 12)  # what the videos API offers
 GENERATED_LICENCE = "Generated"
@@ -641,12 +661,14 @@ class RealSteps:
         return verdicts
 
 
-JUDGE_SYSTEM = (
-    "You pick b-roll for a true-crime documentary set in 1960s-1990s America: Chicago and its suburbs "
-    "(Des Plaines, Norwood Park) mostly in winter, 1960s Waterloo, Iowa, a police investigation, a house "
-    "search, a 1980 trial, Illinois prisons, a 1994 execution. Wanted: city and suburban streets, night "
-    "roads, snow and winter driving, police cars, officers at work, police stations, offices, courtrooms, "
-    "prisons, houses, construction work, shops, small towns, crowds seen at a distance. You are shown "
+def judge_system() -> str:
+    c = profile()
+    return JUDGE_TEMPLATE.format(case=f"{c.title} ({c.region}; {c.era})", events=c.story_settings,
+                                 wanted=", ".join(c.settings), latest=latest_year())
+
+
+JUDGE_TEMPLATE = (
+    "You pick b-roll for a true-crime documentary about {case}: {events}. Wanted: {wanted}. You are shown "
     "numbered frames, one per scene of an old film. For each frame decide:\n"
     "usable: true only if it is clean live-action footage that could stand in for that period setting "
     "(not animation, diagrams, maps, charts, a blank or black frame, a test pattern, or an unreadable blur);\n"
@@ -658,7 +680,7 @@ JUDGE_SYSTEM = (
     "graphic: human remains, a body or a corpse visible; violence: a fight, a weapon in use, injury, blood, "
     "a crash with victims; on_screen_text: any title, credit, caption, subtitle, logo, watermark, timecode "
     "or film leader numbers over the picture (ordinary signs that are part of the scene do not count); "
-    "modern_elements: anything that could not be from before 1995; close_up_face: one person's face fills "
+    "modern_elements: anything that could not be from before {latest}; close_up_face: one person's face fills "
     "a large part of the frame and could be recognised."
 )
 
@@ -695,7 +717,7 @@ def judge_batch(client, model: str, candidate: dict, frames: list[tuple[int, Pat
         try:
             response = client.responses.parse(
                 model=model,
-                input=[{"role": "system", "content": JUDGE_SYSTEM}, {"role": "user", "content": content}],
+                input=[{"role": "system", "content": judge_system()}, {"role": "user", "content": content}],
                 text_format=Verdicts,
             )
             parsed = response.output_parsed
@@ -804,31 +826,15 @@ def cut_clip(source: Path, start: float, end: float, destination: Path) -> dict:
 
 # ---------- searching ----------
 
-ARCHIVE_QUERIES = [
-    "chicago", "chicago street", "chicago traffic", "chicago night", "snow", "winter", "winter driving",
-    "blizzard", "snowstorm", "police", "police car", "police patrol", "police station", "detective",
-    "crime laboratory", "fingerprint", "court", "courtroom", "trial", "judge jury", "prison", "jail",
-    "penitentiary", "inmate", "suburb", "suburban", "housing", "construction", "contractor", "night driving",
-    "city at night", "street scenes", "downtown", "traffic", "iowa", "small town", "main street",
-    "drugstore", "pharmacy", "newspaper", "television news", "missing", "runaway", "highway", "illinois",
-]
-
-COMMONS_QUERIES = [
-    "Chicago 1970s", "Chicago 1960s", "Chicago scenes", "National Archives Chicago", "National Archives police",
-    "National Archives prison", "National Archives snow", "National Archives winter", "National Archives court",
-    "1970s police", "1970s street", "1970s traffic", "prison 1970s", "Iowa 1960s", "snow 1970s",
-    "police car 1970s", "courthouse", "penitentiary", "Illinois",
-]
-
-ARCHIVE_FILTER = (
-    "mediatype:movies AND year:[1955 TO 1994] AND collection:("
-    + " OR ".join(sorted(TRUSTED_COLLECTIONS)) + ")"
-)
+def archive_filter() -> str:
+    first, last = profile().footage_years[0], profile().footage_years[-1]
+    return (f"mediatype:movies AND year:[{first} TO {last}] AND collection:("
+            + " OR ".join(sorted(TRUSTED_COLLECTIONS)) + ")")
 
 
 def search_archive(query: str, rows: int = 40) -> list[dict]:
     data = fetch_json(ARCHIVE_SEARCH, {
-        "q": f"({query}) AND {ARCHIVE_FILTER}",
+        "q": f"({query}) AND {archive_filter()}",
         "fl[]": ["identifier", "title", "licenseurl", "year", "collection", "description", "downloads"],
         "rows": rows, "sort[]": "downloads desc", "output": "json",
     })
@@ -881,7 +887,7 @@ def search_commons_video(query: str, limit: int = 20) -> list[dict]:
             continue
         dated = plain_text((meta.get("DateTimeOriginal") or {}).get("value"), fallback="")
         year = year_of(dated) or year_of(page.get("title"))
-        if not year or year > LATEST_YEAR:
+        if not year or year > latest_year():
             continue
         choice = pick_commons_derivative(info.get("derivatives") or [])
         if not choice:
@@ -908,7 +914,7 @@ def nara_available() -> tuple[bool, str]:
     """Whether the National Archives catalogue API answers JSON without a key."""
     try:
         with httpx.Client(timeout=20, headers={"User-Agent": USER_AGENT}) as client:
-            response = client.get(NARA_SEARCH, params={"q": "chicago police", "rows": 1})
+            response = client.get(NARA_SEARCH, params={"q": profile().fallback_query, "rows": 1})
         if "json" not in response.headers.get("content-type", ""):
             return False, f"HTTP {response.status_code}, {response.headers.get('content-type')} (needs an API key)"
         response.json()
@@ -917,15 +923,15 @@ def nara_available() -> tuple[bool, str]:
         return False, str(exc)[:160]
 
 
-RANK_SYSTEM = (
-    "Rate public-domain films as sources of b-roll for a true-crime documentary about the John Wayne Gacy "
-    "case: 1970s Chicago and its north-west suburbs (Des Plaines, Norwood Park) in winter; 1960s Waterloo, "
-    "Iowa; police investigation, surveillance and stations; a house search; construction work; a 1980 "
-    "courtroom trial; Illinois prisons; an execution in 1994. score 0-5: 5 = likely to contain clean "
-    "live-action shots of exactly those settings in the right era; 3 = some useful generic period street, "
-    "car, police, court, prison or winter shots; 0-1 = cartoons, lectures, studio interiors, wrong country, "
-    "pre-1955, sport, music, or nothing relevant. Judge from title, year and description only."
-)
+def rank_system() -> str:
+    c = profile()
+    return (
+        f"Rate public-domain films as sources of b-roll for a true-crime documentary about {c.title}: "
+        f"{c.region}; {c.era}; {c.story_settings}. Wanted: {', '.join(c.settings)}. score 0-5: 5 = likely "
+        "to contain clean live-action shots of exactly those settings in the right era; 3 = some useful "
+        "generic period street, car, police, court or prison shots; 0-1 = cartoons, lectures, studio "
+        f"interiors, wrong country, pre-{c.footage_years[0]}, sport, music, or nothing relevant. Judge from "
+        "title, year and description only.")
 
 
 def rank_candidates(client, model: str, candidates: list[dict]) -> list[dict]:
@@ -945,7 +951,7 @@ def rank_candidates(client, model: str, candidates: list[dict]) -> list[dict]:
             f"key: {c['key']}\ntitle: {c['title']}\nyear: {c.get('year')}\nlength: {c.get('length_s')}\n"
             f"description: {str(c.get('description') or '')[:400]}" for c in batch)
         response = client.responses.parse(
-            model=model, input=[{"role": "system", "content": RANK_SYSTEM}, {"role": "user", "content": text}],
+            model=model, input=[{"role": "system", "content": rank_system()}, {"role": "user", "content": text}],
             text_format=Scores)
         scores = {s.key: s for s in (response.output_parsed.scores if response.output_parsed else [])}
         for c in batch:
@@ -958,7 +964,7 @@ def gather(log=print) -> tuple[list[dict], list[str]]:
     """Every licence-clean candidate from every source, de-duplicated, with what failed."""
     failures: list[str] = []
     ids: dict[str, dict] = {}
-    for query in ARCHIVE_QUERIES:
+    for query in profile().archive_queries:
         try:
             for doc in search_archive(query):
                 ids.setdefault(doc["identifier"], doc)
@@ -977,13 +983,13 @@ def gather(log=print) -> tuple[list[dict], list[str]]:
         found = [c for c in pool.map(meta, list(ids)) if c]
     log(f"archive.org: {len(found)} licence-clean, downloadable")
     commons: dict[str, dict] = {}
-    for query in COMMONS_QUERIES:
+    for query in profile().commons_footage_queries:
         try:
             for c in search_commons_video(query):
                 commons.setdefault(c["key"], c)
         except Exception as exc:  # noqa: BLE001
             failures.append(f"commons search {query!r}: {exc}")
-    log(f"commons: {len(commons)} licence-clean, pre-{LATEST_YEAR + 1} videos")
+    log(f"commons: {len(commons)} licence-clean, pre-{latest_year() + 1} videos")
     ok, why = nara_available()
     if not ok:
         failures.append(f"nara: catalogue API unusable without a key: {why}")
@@ -1132,7 +1138,7 @@ def cmd_generate(args) -> None:
         "rights": "generated", "duration_s": info["duration_s"], "width": info["width"],
         "height": info["height"], "fps": info["fps"],
         "segments": [{"in": 0.0, "out": info["duration_s"], "caption": args.caption or args.prompt,
-                      "era": args.era, "quality": args.quality, "graphic": False}],
+                      "era": args.era or profile().decade, "quality": args.quality, "graphic": False}],
     }
     lib.add_item(item)
     lib.mark(key, status="stored", clip_id=clip_id, generation=report)
@@ -1287,7 +1293,7 @@ def main() -> None:
     g.add_argument("--seconds", type=int, default=4)
     g.add_argument("--video-model", default="sora-2")
     g.add_argument("--caption", default="")
-    g.add_argument("--era", default="1970s")
+    g.add_argument("--era", default="", help="default: the case's main decade")
     g.add_argument("--quality", type=int, default=3)
     rc = sub.add_parser("recheck")
     rc.add_argument("video_dir")
@@ -1302,6 +1308,8 @@ def main() -> None:
     pr.add_argument("video_dir")
     pr.add_argument("--per-film", type=int, default=MAX_SEGMENTS_PER_FILM)
     args = parser.parse_args()
+    import case
+    use(case.load(Path(args.video_dir)))
     {"search": cmd_search, "build": cmd_build, "generate": cmd_generate, "prune": cmd_prune,
      "recheck": cmd_recheck, "borders": cmd_borders, "drop": cmd_drop}[args.command](args)
 

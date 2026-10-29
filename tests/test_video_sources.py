@@ -230,7 +230,7 @@ def test_commons_search_asks_the_api_for_licensed_bitmaps(fake_api):
     assert params["iiprop"] == "url|extmetadata|size"
     assert params["iiurlwidth"] == 1920
     assert params["format"] == "json"
-    assert "sinhala-voice-doc" in sources.USER_AGENT
+    assert "github.com/ShalikaNuwan" in sources.USER_AGENT   # Wikimedia requires a contact in the User-Agent
 
 
 def test_commons_search_reduces_html_artist_to_a_readable_name(fake_api):

@@ -331,6 +331,103 @@ costs the job nothing: the unmastered voice is kept and the job carries a warnin
 The chain is deliberately gentle and is meant to be inaudible as an effect. It will not turn one
 vendor's voice into another's; it removes the level drift that reads as amateur.
 
+## Documentary video: the storyboard flow
+
+`scripts/video/` turns a finished narration into a documentary cut from real archival pictures. The
+storyboard flow plans the whole film the way an editor does before anything is rendered: understand the
+story, storyboard it, review it, then build it. Run the steps in order in one project folder (`<dir>`,
+e.g. `data/video/gacy_v2`), with `OPENAI_API_KEY` set. Rendering uses the isolated ffmpeg 9 in
+`/opt/miniconda3/envs/video/bin/`, never the voice pipeline's ffmpeg.
+
+**One command.** For a new film, give the narration and its text:
+
+```bash
+.venv/bin/python scripts/video/documentary.py prepare data/video/<film> --audio narration.wav --script script.txt
+.venv/bin/python scripts/video/documentary.py render  data/video/<film> [--sound]
+```
+
+`prepare` runs every step below in order and stops at a review cut (`storyboard.html`, a 480p
+`animatic.mp4`, `critic.md`); `render` makes the 1080p film (`--sound` mixes music and effects under a
+bare narration). Each stage logs to `<dir>/logs/`; `<dir>/pipeline.json` remembers what is done, so a
+rerun resumes. `--from STAGE` reruns from a stage, `--only STAGE` runs one, `--pause-after-case` stops
+after the case profile so it can be read and edited, `--skip-footage` uses photographs only.
+
+**The case profile.** Nothing in the code is tied to one story. What differs between films is where
+their pictures are, and `case.py <dir> <script>` writes that to `<dir>/case.json`: the case's Commons
+categories and Wikipedia articles (only titles that exist are kept), the region and era, the main places
+(their period categories, e.g. "Seattle in the 1970s" and DOCUMERICA photographs of each state, are
+found on Commons), starter names, people famous enough to search by name, names too broad to search,
+period-footage searches and years, and the fallback search for a period street. The harvest, the
+captions, the footage search, the planner and the register read it. Read it before the harvest; it can
+be edited by hand.
+
+1. **Timing.**
+   - `align_script.py <audio> <script> <dir>` uses whisper-1 to give word times to the known script.
+   - `sentences.py <dir> <script>` turns those into sentence times.
+2. **Story bible.** `story_bible.py <dir> --free-only` reads the whole script at once (gpt-6-sol). It
+   writes down the people (linked to their real photographs), places, a dated timeline, and the
+   chapters with their tone, tension and look. gpt-6-astra reviews it and gpt-6-sol revises it once.
+   The review's concerns about the narration itself are kept apart as notes for the owner.
+   Output: `bible.json`.
+3. **Quotes.** `quotes.py <dir>` finds every quotation in the script and times it to the spoken words.
+   Each quote is shown in one of these ways:
+   - speech: a quote card;
+   - written words: an exhibit;
+   - terms: no card.
+
+   Sensitive quotes stay in the narration unless switched on. The model classifies each quote but never
+   rewrites one. `--retime` re-times the quotes without the model. Output: `quotes.json`.
+4. **Storyboard.** `storyboard.py <dir> --free-only --events events_mapped.json --audio <mix>` plans each
+   chapter into scenes and beats, with the whole chapter in view. Each beat gets its intent, subjects,
+   shot type, pictures, camera, transitions and effects. A colourist pass then gives every scene its
+   look. Code rules then apply:
+   - every sentence is covered;
+   - beats run 3–20 s;
+   - effect budgets are kept;
+   - a victim's photograph appears only where their name is said;
+   - quote cards land on the right beat.
+
+   Writes `storyboard.json` and the `shots.json` that rendering reads. Options:
+   - `--chapters 1,2` previews a few chapters.
+   - `--relook` re-runs only the colourist pass.
+   - `--recheck` re-applies the code rules without the model.
+5. **Picture checks.** `check_pictures.py <dir> --free-only` has a vision model look at every chosen
+   picture against its beat. A picture that fails is swapped for a passing choice. What still lacks a
+   picture goes to `needs.md`, and to `library/needs.json` for `harvest.py <dir> --stages needs`.
+   Then, on the saved storyboard, in this order:
+   - `storyboard.py <dir> --scenarios` rebuilds scenes with a recipe (the victims' register as cards).
+   - `storyboard.py <dir> --ladder --free-only` carries out each beat's relevance link (reframe, hold,
+     illustration), refuses photographs dated after their scene, and breaks A-B-A-B loops.
+   - `storyboard.py <dir> --illustrate` replaces long holds, overused stand-ins and misleading pictures
+     with labelled object or setting illustrations (rationed; never people or named places).
+   - `storyboard.py <dir> --recheck --free-only` re-applies the code rules.
+   - `storyboard.py <dir> --key-facts` labels the physical clues the narration stresses ("BLUE JACKET"),
+     in the narration's own words, over a blurred copy of the shot, for about 3 s. Run it last; running
+     it again replaces the labels rather than adding more.
+6. **Review.** `storyboard_page.py <dir>` writes `storyboard.html`: the tension curve, chapters, scenes,
+   one row per beat with its thumbnail, intent, look, effects, quotes and check results, and the notes on
+   the narration. `build.py <dir> --animatic` renders a fast 854×480 review cut (`animatic.mp4`).
+7. **Critics and the film.**
+   - `critics.py <dir>` checks continuity, pacing and repetition, and gpt-6-astra reviews frames from
+     every scene (`critic.md`).
+   - After fixes, `build.py <dir>` renders the film at full quality.
+   - Shot files are deleted once joined, to save disk, so a rebuild redraws everything. Add
+     `--keep-intermediates` (about 15 GB for a 90-minute film) to keep them, so a rebuild after fixes only
+     redraws the shots that changed.
+
+Looks (`looks.py`), chosen per scene, all subtle variations of one family:
+
+| Look | Use |
+|---|---|
+| investigation | the home look |
+| warm_memory | the time before |
+| cold_dread | unease building |
+| revelation | the truth coming out: colour drained except crimson |
+| courtroom | trial and aftermath |
+| memorial | the victims remembered, in soft black and white with no effects |
+
+Effects (flash, shake, flicker) are rare and only where the storyboard places them.
+
 ## Production boundaries
 
 Before a public or multi-user deployment, add authentication and project-level authorization, private object storage with signed URLs, a managed queue, retention/deletion controls, encrypted backups, request tracing, and rate limiting.

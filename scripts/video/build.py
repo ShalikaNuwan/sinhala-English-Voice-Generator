@@ -6,6 +6,7 @@
       --from N         start at shot N
       --subtitles X    burn | sidecar | none   (default: whatever shots.json says)
       --out PATH       output file (default: <video_dir>/cut.mp4, or preview.mp4 for a slice)
+      --animatic       a fast 854x480 review cut with no grain -> animatic.mp4 (never the film)
 
 Shots the planner matched to a library photograph are used as they are. A shot with no library match
 is searched for (a real photograph first); a shot the planner marked `generated` is generated, as the
@@ -27,6 +28,7 @@ import assemble  # noqa: E402
 import graphics  # noqa: E402
 import investigation  # noqa: E402
 import motion  # noqa: E402
+import plan_edit  # noqa: E402
 import sources  # noqa: E402
 
 DRAWN = {"chart", "map"}
@@ -117,7 +119,7 @@ def render_motion(shots: list[dict], video_dir: Path, library: dict[str, dict]) 
                 shot.update({"media": "photo", "kind": "archival", "asset": subject["file"],
                              "colour": subject.get("colour"), "kind_hint": subject.get("kind")})
             else:
-                shot.update({"media": "photo", "kind": "period", "asset": None, "query": "chicago 1970s street"})
+                shot.update({"media": "photo", "kind": "period", "asset": None, "query": plan_edit.FALLBACK_QUERY})
     return made
 
 
@@ -134,7 +136,7 @@ def fill_gaps(shots: list[dict], video_dir: Path) -> list[dict]:
         if copy["kind"] == "period":
             copy["kind"] = "stock"
         if copy["kind"] in ("archival", "stock") and not copy.get("query"):
-            copy["query"] = "chicago 1970s street"
+            copy["query"] = plan_edit.FALLBACK_QUERY
         staged.append(copy)
     filled = {s["index"]: s for s in sources.fill_shots(staged, video_dir / "assets")}
     out = []
@@ -209,9 +211,11 @@ def main() -> None:
     parser.add_argument("--out", default="")
     parser.add_argument("--sound", action="store_true", help="mix music and effects under the narration")
     parser.add_argument("--keep-intermediates", action="store_true")
+    parser.add_argument("--animatic", action="store_true", help="fast 854x480 review cut, no grain")
     args = parser.parse_args()
 
     video_dir = Path(args.video_dir)
+    plan_edit.use_case(video_dir)
     plan = json.loads((video_dir / "shots.json").read_text(encoding="utf-8"))
     preview = args.shots is not None or args.start > 1
     shots = chosen_shots(plan, args.start, args.shots)
@@ -256,7 +260,14 @@ def main() -> None:
                                           encoding="utf-8")
 
     out = Path(args.out) if args.out else video_dir / ("preview.mp4" if preview else "cut.mp4")
-    wait_for_space(video_dir, span)
+    if args.animatic:
+        assemble.use_draft()
+        plan["width"], plan["height"] = 854, 480
+        filled_path = video_dir / "shots.animatic.json"
+        filled_path.write_text(json.dumps(plan, ensure_ascii=False, indent=1), encoding="utf-8")
+        out = Path(args.out) if args.out else video_dir / "animatic.mp4"
+    else:
+        wait_for_space(video_dir, span)
     print(f"assembling to {out}")
     assemble.render(filled_path, out, subtitles=args.subtitles or plan.get("subtitles"),
                     start_index=shots[0]["index"], limit=len(shots), keep_intermediates=args.keep_intermediates)

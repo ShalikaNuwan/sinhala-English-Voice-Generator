@@ -3,7 +3,7 @@ picture events, and a master at YouTube loudness.
 
     .venv/bin/python scripts/video/sound.py [video_dir] [--preview N] [--probe]
 
-      video_dir     default data/video/gacy; reads shots.json, writes sound/mix.wav
+      video_dir     the film's folder; reads shots.json (and case.json's optional reveals), writes sound/mix.wav
       --preview N   only the first N seconds, to sound/mix_preview.wav, with ducking numbers
       --probe       ask ElevenLabs which sound endpoints the key may use, then stop
 
@@ -79,19 +79,26 @@ DRONE_GAP_S = 120.0
 KIT_REF_LUFS = -20.0  # every kit file is stored with its loudest moment here
 EFFECT_LUFS = {"shutter": -31.0, "typewriter": -32.0, "whoosh": -29.0, "drone": -28.0}
 
-# Big reveals, in story order. Each fires once, on the first shot whose narration says it; a reveal
-# within DRONE_GAP_S of the previous drone is skipped, and no more than MAX_DRONES fire. For the Gacy
-# script: the cold open's "remains of twenty-nine" (shot 8), the confession "That boy is dead" (376),
-# the house search with the warrant (399), the verdict (573) and the execution (624). The arrest
-# (395, "took him into custody") is left out: it falls 35 s before the search, which would then be
-# skipped by the gap rule, and the search is the bigger picture.
-REVEALS = [
-    ("cold open", r"remains of twenty-nine"),
-    ("confession", r"that boy is dead"),
-    ("house search", r"cook county sheriff.{0,20}went to gacy"),
-    ("verdict", r"jury found gacy guilty"),
-    ("execution", r"put to death by lethal injection"),
-]
+# Big reveals: by default the first shot of each storyboard scene whose look is "revelation" or whose
+# intensity is REVEAL_INTENSITY or more; a film may instead list [name, regex] pairs in case.json
+# ("reveals"), each firing on the first shot whose narration matches. Either way a reveal within
+# DRONE_GAP_S of the previous drone is skipped, and no more than MAX_DRONES fire.
+REVEAL_INTENSITY = 9
+
+
+def reveal_scenes(shots: list[dict]) -> dict[int, str]:
+    """The shot index that opens each big-reveal scene, with a name for the log."""
+    out: dict[int, str] = {}
+    seen: set = set()
+    for shot in sorted(shots, key=lambda s: s["start"]):
+        scene = shot.get("scene")
+        if scene is None or scene in seen:
+            continue
+        seen.add(scene)
+        if shot.get("look") == "revelation" or int(shot.get("intensity") or 0) >= REVEAL_INTENSITY:
+            out[shot.get("index")] = f"scene {scene}"
+    return out
+
 
 INCOMPETECH = "https://incompetech.com/music/royalty-free/mp3-royaltyfree/"
 CC_BY_4 = "https://creativecommons.org/licenses/by/4.0/"
@@ -239,7 +246,7 @@ def _picture_key(shot: dict) -> str | None:
     return shot.get("library_id") or shot.get("asset") or None
 
 
-def events_from_shots(shots: list[dict], whoosh_s: float = WHOOSH_S, reveals=REVEALS) -> list[dict]:
+def events_from_shots(shots: list[dict], whoosh_s: float = WHOOSH_S, reveals=None) -> list[dict]:
     """The film's sound effects, sparse and tied to what the picture does. Pure.
 
     - whoosh: ends exactly on each `black` transition's cut (the shot's start, the darkest frame of
@@ -248,15 +255,16 @@ def events_from_shots(shots: list[dict], whoosh_s: float = WHOOSH_S, reveals=REV
       (`kind` archival, shown as a still), at most one per SHUTTER_GAP_S; never on a shot that rises
       out of black (its whoosh already marks it) or carries a date stamp (its keys do).
     - typewriter: TYPE_DELAY_S into a shot whose overlay is a `stamp` card, as the date types itself.
-    - drone: the first shot of each big reveal in `reveals` (see REVEALS), at most MAX_DRONES, no two
-      within DRONE_GAP_S.
+    - drone: the first shot of each big reveal (`reveals` as [name, regex] pairs, or else the storyboard's
+      revelation scenes; see reveal_scenes), at most MAX_DRONES, no two within DRONE_GAP_S.
     """
     shots = sorted(shots, key=lambda s: s["start"])
     events: list[dict] = []
     last_shutter = -math.inf
     last_drone = -math.inf
     drones = 0
-    pending = list(reveals)
+    pending = [tuple(r) for r in reveals or []]
+    opening = {} if reveals else reveal_scenes(shots)
     for position, shot in enumerate(shots):
         start = float(shot["start"])
         transition = (shot.get("transition_in") or "dissolve").lower()
@@ -276,6 +284,10 @@ def events_from_shots(shots: list[dict], whoosh_s: float = WHOOSH_S, reveals=REV
             events.append({"kind": "shutter", "t": round(start, 3), "shot": shot.get("index"),
                            "reason": f"new case photograph {key}"})
             last_shutter = start
+        if shot.get("index") in opening and drones < MAX_DRONES and start - last_drone >= DRONE_GAP_S:
+            events.append({"kind": "drone", "t": round(start, 3), "shot": shot.get("index"),
+                           "reason": f"reveal: {opening[shot.get('index')]}"})
+            last_drone, drones = start, drones + 1
         narration = (shot.get("narration") or "").lower().replace("’", "'")
         for name, pattern in list(pending):
             if re.search(pattern, narration):
@@ -750,7 +762,7 @@ def probe_elevenlabs() -> dict[str, str]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("video_dir", nargs="?", default=str(VIDEO_DIR))
+    parser.add_argument("video_dir")
     parser.add_argument("--preview", type=float, default=None, help="mix only the first N seconds")
     parser.add_argument("--probe", action="store_true", help="check the ElevenLabs key's sound permissions")
     args = parser.parse_args()
@@ -771,7 +783,9 @@ def main() -> None:
     credits = write_credits(sound_dir)
     kit = build_kit(sound_dir)
     tracks = prepare_tracks(sound_dir)
-    events = [e for e in events_from_shots(plan["shots"]) if e["t"] < duration]
+    case_path = video_dir / "case.json"
+    reveals = json.loads(case_path.read_text(encoding="utf-8")).get("reveals") if case_path.exists() else None
+    events = [e for e in events_from_shots(plan["shots"], reveals=reveals or None) if e["t"] < duration]
     counts = {k: sum(1 for e in events if e["kind"] == k) for k in KIT}
     print(f"{duration / 60:.1f} min; effects: {counts}; credits: {credits}")
     stem = "mix_preview" if args.preview else "mix"

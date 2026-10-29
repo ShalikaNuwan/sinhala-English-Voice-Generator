@@ -108,6 +108,20 @@ class PlannedBeat(PlannedShot):
     last: int = Field(description="The last sentence number of this beat (the same as first for one sentence).")
 
 
+# A period street of the story's main place, for a shot nothing else covers: case.json's fallback_query,
+# set by use_case(video_dir) from each entry point.
+FALLBACK_QUERY = "city street"
+CASE_KEYWORD = ""             # the culprit's name, at the centre of the evidence board (case.json keyword)
+
+
+def use_case(video_dir: Path) -> None:
+    global FALLBACK_QUERY, CASE_KEYWORD
+    import case
+    FALLBACK_QUERY = case.fallback_query(video_dir)
+    if case.path_of(video_dir).exists():
+        CASE_KEYWORD = case.load(video_dir).keyword.lower()
+
+
 class PlannedBeats(BaseModel):
     beats: list[PlannedBeat]
 
@@ -121,7 +135,7 @@ Choosing pictures:
   event that the library has a picture of, use that picture. Case pictures (the people, the house,
   the pharmacy, the courts, the newspapers, the documents) always beat atmosphere.
 - When the narration is general (mood, reflection, time passing), use a period photograph of the
-  setting: 1970s Chicago and its suburbs, streets, houses, cars, police, courts, winter.
+  story's own setting, in its place and era: streets, houses, cars, police, courts, the season.
 - Give four to six library ids per shot in `choices`, best first. Prefer quality 3 and above.
 - Colour: the film should feel alive, not a wall of grey. When a colour photograph carries the
   moment as well as a black-and-white one, rank the colour one first, and always include at least
@@ -475,7 +489,7 @@ def limit_drawn(shots: list[dict], duration_s: float) -> None:
             continue
         shot["kind"] = "archival" if shot.get("library_id") else "period"
         if not shot.get("library_id") and not shot.get("query"):
-            shot["query"] = "chicago 1970s street"
+            shot["query"] = FALLBACK_QUERY
 
 
 DEVICE_MIN_S = {"profile": 6.0, "exhibit": 5.0, "highlight": 5.0}
@@ -609,8 +623,8 @@ def insert_boards(shots: list[dict], library: dict[str, dict]) -> None:
     """The evidence board comes back at scene changes and grows with what the case has established.
 
     Its pins are the people already profiled and the evidence already shown as exhibits, so every
-    label is something the film has stated. The first person profiled with "Gacy" in the name sits
-    at the centre, joined to each of the others.
+    label is something the film has stated. The first person profiled with the case keyword (case.json,
+    e.g. "Gacy") in the name sits at the centre, joined to each of the others.
     """
     established: list[dict] = []
     next_at = BOARD_EVERY_S / 2
@@ -623,7 +637,7 @@ def insert_boards(shots: list[dict], library: dict[str, dict]) -> None:
             sub = fields.get("ROLE") or fields.get("AGE") or fields.get("LAST SEEN") or ""
             name = fields.get("NAME", "")
             # Another murderer is mentioned for comparison; red string to him would claim a link.
-            if "gacy" in name.lower() or not re.search(r"killer|murderer", sub, re.I):
+            if (CASE_KEYWORD and CASE_KEYWORD in name.lower()) or not re.search(r"killer|murderer", sub, re.I):
                 established.append({"library_id": shot["subject_id"], "label": name, "sub": sub[:40]})
         elif kind == "exhibit":
             words = (shot.get("tag") or "").split(",")[0].split()
@@ -640,7 +654,7 @@ def insert_boards(shots: list[dict], library: dict[str, dict]) -> None:
         seen: dict[str, dict] = {}
         for pin in pins:
             seen[pin["library_id"]] = pin
-        centre = next((p for p in seen.values() if "gacy" in p["label"].lower()), None)
+        centre = next((p for p in seen.values() if CASE_KEYWORD and CASE_KEYWORD in p["label"].lower()), None)
         others = [p for p in seen.values() if p is not centre][-6:]
         pins = ([centre] if centre else []) + others
         if len(pins) < 3 or [p["library_id"] for p in pins] == last_pins:
@@ -797,6 +811,7 @@ def land_on_effects(entries: list[dict], events: list[dict], whoosh_s: float = 1
         nearest = min(range(len(starts)), key=lambda k: abs(starts[k] - cut))
         if nearest and abs(starts[nearest] - cut) <= reach_s:
             entries[nearest]["transition_in"] = "black"
+            entries[nearest]["dip_reason"] = "whoosh in the audio"
             landed += 1
     return landed
 
@@ -810,7 +825,7 @@ def to_contract(shot: dict, planned: PlannedShot | None) -> dict:
         "asset": None, "colour": None, "licence": None, "attribution": None, "source_url": None, "rights": None,
     }
     if planned is None:
-        entry.update({"query": "chicago 1970s street night", "reason": "planner returned nothing for this shot"})
+        entry.update({"query": f"{FALLBACK_QUERY} night", "reason": "planner returned nothing for this shot"})
         return entry
     entry.update({
         "kind": planned.kind, "kind_planned": planned.kind, "choices": planned.choices[:6], "query": planned.query, "prompt": planned.prompt,
@@ -949,7 +964,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("video_dir")
     parser.add_argument("--model", default=settings.text_model)
-    parser.add_argument("--audio", default=str(Path("~/Downloads/ElevenLabs_Cacy.wav").expanduser()))
+    parser.add_argument("--audio", default="", help="the narration the film is cut to")
     parser.add_argument("--workers", type=int, default=6)
     parser.add_argument("--shots", type=int, default=None, help="plan only the first N shots (preview)")
     parser.add_argument("--repick", action="store_true",
@@ -964,6 +979,7 @@ def main() -> None:
     from openai import OpenAI
 
     video_dir = Path(args.video_dir)
+    use_case(video_dir)
     lines = json.loads((video_dir / "lines.json").read_text(encoding="utf-8"))
     items = json.loads((video_dir / "library.json").read_text(encoding="utf-8"))["items"]
     apply_reviews(items, video_dir / "library")

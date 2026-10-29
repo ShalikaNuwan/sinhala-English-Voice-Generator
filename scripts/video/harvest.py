@@ -1,13 +1,16 @@
 """Gather every usable real picture for an episode into library/ and library.json.
 
-    .venv/bin/python scripts/video/harvest.py data/video/gacy [--stages case,entities,period,wikipedia,web]
+    .venv/bin/python scripts/video/harvest.py <video_dir> [--script S] [--stages case,entities,period,wikipedia,web,needs]
+
+The case-specific part (categories, articles, starter names, region, era) is <video_dir>/case.json (case.py).
 
 Sources, in order of preference (Revision 2 of the documentary design):
-  1. Commons case categories (Category:John Wayne Gacy and its subcategories), every licence.
+  1. Commons case categories (case.json, e.g. Category:John Wayne Gacy, and subcategories), every licence.
   2. Commons and Openverse searches for every person, place and institution the script names.
-  3. Period atmosphere: DOCUMERICA and 1970s Chicago categories on Commons.
+  3. Period atmosphere: the region-and-era Commons categories in case.json.
   4. Images on the relevant English Wikipedia articles, non-free (fair use) files included.
   5. News photographs: the og:image of each page listed in library/web_seeds.json.
+  6. needs: targeted Commons searches for the storyboard's gaps (library/needs.json, check_pictures.py).
 
 Duplicates go by URL and by an 8x8 average hash. Files are cached: a rerun never fetches one twice,
 and keeps every caption field caption.py has already written.
@@ -61,42 +64,28 @@ SIZE_FLOOR = 480
 HASH_DISTANCE = 5
 WORKERS = 5
 RASTER = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".gif", ".webp"}
-PREFIX = {"commons": "c", "openverse": "o", "wikipedia": "w", "web": "n"}
+PREFIX = {"commons": "c", "openverse": "o", "wikipedia": "w", "web": "n", "archive": "a"}
 RIGHTS_RANK = {"free": 0, "original": 1, "fair_use": 2, "generated": 3}
 
-CASE_ROOT = "Category:John Wayne Gacy"
-PERIOD_CATEGORIES = [  # (category, depth)
-    ("Category:DOCUMERICA photographs of Chicago", 0),
-    ("Category:DOCUMERICA photographs of Illinois", 0),
-    ("Category:Chicago in the 1970s", 1),
-    ("Category:Black and white photographs of Chicago in the 1970s", 0),
-]
 PERIOD_SKIP = re.compile(r"sport|baseball|football|hockey|basketball|cubs|white sox|bears|bulls", re.I)
 PERIOD_MAX = 120
 
-STARTER_ENTITIES = [
-    ("John Wayne Gacy", "person"), ("Robert Piest", "person"), ("Nisson Pharmacy", "business"),
-    ("Des Plaines Illinois", "place"), ("8213 West Summerdale Avenue", "place"),
-    ("Norwood Park Township", "place"), ("Cook County Criminal Courts Building", "institution"),
-    ("Cook County Jail", "institution"), ("Menard Correctional Center", "institution"),
-    ("Stateville Correctional Center", "institution"), ("Des Plaines River", "place"),
-    ("Waterloo Iowa", "place"), ("Anamosa State Penitentiary", "institution"),
-    ("PDM Contractors", "business"), ("Pogo the Clown", "object"), ("Jaycees", "institution"),
-    ("Sam Amirante", "person"), ("Terry Sullivan", "person"), ("William Kunkle", "person"),
-    ("Joseph Kozenczak", "person"), ("Jeffrey Rignall", "person"), ("Michael Rossi", "person"),
-    ("David Cram", "person"), ("Gregory Godzik", "person"), ("John Butkovich", "person"),
-    ("Michael Bonnin", "person"), ("John Mowery", "person"), ("James Mazzara", "person"),
-    ("Rosalynn Carter", "person"),
-]
+# The case itself (its Commons categories, Wikipedia articles, starter names, region and era) comes from
+# the film's case.json (case.py); `use(profile)` sets it for this run.
+PROFILE = None
 
-# Articles accepted as they are; any other title must link to the Gacy article to count.
-WIKI_ARTICLES = [
-    "John Wayne Gacy", "Des Plaines, Illinois", "Norwood Park Township, Cook County, Illinois",
-    "Cook County Jail", "Menard Correctional Center", "Stateville Correctional Center",
-    "Des Plaines River", "Waterloo, Iowa", "Anamosa State Penitentiary", "Sam Amirante",
-    "William Kunkle", "Rosalynn Carter", "United States Junior Chamber", "Robert Piest",
-    "Cook County Sheriff's Office", "Norwood Park, Chicago", "Chicago Police Department",
-]
+
+def use(profile) -> None:
+    global PROFILE
+    PROFILE = profile
+
+
+def profile():
+    if PROFILE is None:
+        raise RuntimeError("no case profile: call harvest.use(case.load(video_dir)) first")
+    return PROFILE
+
+
 WIKI_PER_ARTICLE = 10
 WIKI_SKIP = re.compile(
     r"logo|icon|flag of|seal of|symbol|commons-|wiki|edit-|question_book|ambox|padlock|portal"
@@ -380,36 +369,48 @@ def openverse_item(found: dict, found_by: str) -> dict:
     }
 
 
-_STOP = {"the", "of", "and", "a", "an", "in", "at", "on", "illinois", "iowa", "chicago", "county",
+_STOP = {"the", "of", "and", "a", "an", "in", "at", "on", "county",
          "west", "east", "north", "south", "avenue", "street", "center", "centre", "file", "jpg"}
 
 
+def _stop_words() -> set[str]:
+    """The generic stop words plus the case's broad place names (its state, its big cities): a hit that
+    shares only "Chicago" with a name has not found it."""
+    if PROFILE is None:
+        return _STOP
+    broad = [PROFILE.region_short] + [s for s in PROFILE.skip_entities if len(s.split()) <= 2]
+    return _STOP | {w for s in broad for w in re.findall(r"[a-z0-9]+", s.lower())}
+
+
 def _tokens(text: str) -> list[str]:
-    return [t for t in re.findall(r"[a-z0-9]+", text.lower()) if len(t) > 2 and t not in _STOP]
+    stop = _stop_words()
+    return [t for t in re.findall(r"[a-z0-9]+", text.lower()) if len(t) > 2 and t not in stop]
 
 
-# People famous enough in their own right that a picture under their name is very likely them.
-# Anyone else (victims, detectives, lawyers) shares a name with strangers, so a hit must also
-# mention Gacy: a namesake's photograph shown as a victim would be a serious error.
-PUBLIC_FIGURES = {"john wayne gacy", "rosalynn carter", "jimmy carter", "tom dart", "robert ressler",
-                  "walter jacobson", "dean corll"}
+# People famous enough in their own right that a picture under their name is very likely them (case.json
+# public_figures, and the case's subject). Anyone else (victims, detectives, lawyers) shares a name with
+# strangers, so a hit must also carry the case keyword: a namesake's photograph shown as a victim would be
+# a serious error.
+def public_figures() -> set[str]:
+    return {n.lower() for n in profile().public_figures + [profile().subject]}
 
 
 def search_query(entity: dict) -> str:
     """The phrase to search for an entity.
 
-    A place or institution is searched by its own name (the model tends to add "John Wayne Gacy",
-    which narrows a jail or a river to nothing); a private person by name plus "Gacy", since only
-    a picture tied to the case can be trusted to show them; an object keeps the model's phrase.
+    A place or institution is searched by its own name (the model tends to add the case's name, which
+    narrows a jail or a river to nothing); a private person by name plus the case keyword (e.g. "Gacy"),
+    since only a picture tied to the case can be trusted to show them; an object keeps the model's phrase.
     """
     name = re.sub(r"^(?:dr|detective)\.?\s+", "", entity["name"].strip(), flags=re.I)
     kind = entity.get("kind")
     if kind == "person":
-        return name if name.lower() in PUBLIC_FIGURES else f"{name} Gacy"
+        return name if name.lower() in public_figures() else f"{name} {profile().keyword}"
     if kind == "object":
         return entity.get("query") or name
     query = entity.get("query") or name
-    query = re.sub(r"\b(?:john wayne gacy|gacy|arrest|\d{4})\b", " ", query, flags=re.I)
+    case_words = "|".join(re.escape(w) for w in sorted({profile().subject, profile().keyword}, key=len, reverse=True))
+    query = re.sub(rf"\b(?:{case_words}|arrest|\d{{4}})\b", " ", query, flags=re.I)
     return re.sub(r"\s+", " ", query).strip() or name
 
 
@@ -419,7 +420,7 @@ def relevant(name: str, title: str, person: bool) -> bool:
     have = set(re.findall(r"[a-z0-9]+", unquote(title).lower()))
     if not wanted:
         return False
-    if person and name.lower().strip() not in PUBLIC_FIGURES and "gacy" not in have:
+    if person and name.lower().strip() not in public_figures() and profile().keyword.lower() not in have:
         return False
     if person and wanted[-1] not in have:
         return False
@@ -458,10 +459,12 @@ def imageinfo(api: str, titles: list[str]) -> list[dict]:
 
 
 def stage_case() -> list[dict]:
-    titles = walk_category(CASE_ROOT, max_depth=3)
-    _log(f"case: {len(titles)} files under {CASE_ROOT}")
-    return [i for i in (commons_item(p, f"case:{CASE_ROOT}", case=True)
-                        for p in imageinfo(COMMONS_API, titles)) if i]
+    out: list[dict] = []
+    for root in profile().commons_categories:
+        titles = walk_category(root, max_depth=3)
+        _log(f"case: {len(titles)} files under {root}")
+        out += [i for i in (commons_item(p, f"case:{root}", case=True) for p in imageinfo(COMMONS_API, titles)) if i]
+    return out
 
 
 def commons_search(query: str, limit: int = 10) -> list[dict]:
@@ -512,20 +515,16 @@ def extract_entities(script: str, cache: Path) -> list[dict]:
     return found
 
 
-# Names too broad to search for a picture of this story, or that are not about it at all.
-ENTITY_SKIP = {
-    "chicago", "illinois", "iowa", "california", "nebraska", "las vegas", "cook county", "youtube",
-    "democratic party", "republican party", "fbi", "john wayne", "alexander hamilton",
-    "united states secret service", "defense diaries", "greyhound", "motorola", "oldsmobile",
-    "plymouth", "kfc",
-}
+# Names never worth a picture search in any film; each case adds its own (case.json skip_entities).
+GENERIC_SKIP = {"youtube", "democratic party", "republican party", "fbi", "united states secret service"}
 
 
 def searchable(entity: dict) -> bool:
     """False for broad or bare names: a lone first name, a state, a body number."""
     name = entity["name"].strip()
     key = re.sub(r"\W+", " ", name.lower()).strip()
-    if key in ENTITY_SKIP or re.match(r"body \d+$", key):
+    skip = GENERIC_SKIP | {s.lower() for s in profile().skip_entities}
+    if key in skip or re.match(r"body \d+$", key):
         return False
     if entity.get("kind") == "person" and len(name.split()) < 2:
         return False
@@ -536,7 +535,7 @@ def merge_entities(found: list[dict]) -> list[dict]:
     merged: dict[str, dict] = {}
     for entity in found:
         merged.setdefault(re.sub(r"\W+", " ", entity["name"].lower()).strip(), entity)
-    for name, kind in STARTER_ENTITIES:
+    for name, kind in ((e.name, e.kind) for e in profile().starter_entities):
         key = re.sub(r"\W+", " ", name.lower()).strip()
         if key not in merged:
             merged[key] = {"name": name, "kind": kind, "note": "starter list", "query": name}
@@ -587,7 +586,7 @@ def stage_entities(video_dir: Path, script_path: Path, per_source: int = 3) -> l
             out += hits[:per_source]
         except Exception as exc:  # noqa: BLE001
             _log(f"  commons search failed for {name}: {str(exc)[:100]}")
-        if person and name.lower() not in PUBLIC_FIGURES:
+        if person and name.lower() not in public_figures():
             _log(f"  {name}: {len(out)}")
             return out  # Openverse titles almost never tie a private person to the case
         try:
@@ -602,6 +601,81 @@ def stage_entities(video_dir: Path, script_path: Path, per_source: int = 3) -> l
     with ThreadPoolExecutor(max_workers=4) as pool:
         results = list(pool.map(one, entities))
     return [h for hits in results for h in hits]
+
+
+ARCHIVE_API = "https://archive.org/advancedsearch.php"
+ARCHIVE_META = "https://archive.org/metadata/"
+FREE_ONLY = re.compile(r"publicdomain|/zero/|cc0|pdm", re.I)
+
+
+def archive_search(query: str, limit: int = 4) -> list[dict]:
+    """Internet Archive images under a public-domain mark or CC0 only, as library candidates."""
+    data = fetch_json(ARCHIVE_API, {"q": f"({query}) AND mediatype:image AND (licenseurl:*publicdomain* OR licenseurl:*zero*)",
+                                    "fl[]": ["identifier", "title", "licenseurl", "creator"], "rows": limit, "output": "json"})
+    out = []
+    for doc in (data.get("response") or {}).get("docs") or []:
+        licence_url = doc.get("licenseurl") or ""
+        if not FREE_ONLY.search(licence_url):
+            continue
+        meta = fetch_json(ARCHIVE_META + doc["identifier"], {})
+        files = [f for f in meta.get("files") or [] if str(f.get("format", "")).upper() in ("JPEG", "PNG")
+                 and f.get("source") == "original"]
+        if not files:
+            continue
+        best = max(files, key=lambda f: int(f.get("size") or 0))
+        out.append({
+            "source": "archive", "title": plain_text(doc.get("title"), fallback=doc["identifier"]),
+            "url": f"https://archive.org/download/{doc['identifier']}/{best['name']}",
+            "source_url": f"https://archive.org/details/{doc['identifier']}",
+            "licence": "CC0" if "zero" in licence_url else "Public Domain Mark",
+            "attribution": plain_text(doc.get("creator")), "rights": "free",
+            "width": int(best.get("width") or 0), "height": int(best.get("height") or 0), "case": False,
+        })
+    return out
+
+
+def stage_needs(video_dir: Path, per_query: int = 3, openverse_max: int = 120) -> list[dict]:
+    """Targeted searches: library/needs.json, written by search_plan.py (the story's places, settings,
+    objects) and check_pictures.py (its gaps). Each runs on Wikimedia Commons, Openverse (public domain and
+    CC0 only, which carries the Library of Congress and National Archives Flickr Commons collections) and
+    the Internet Archive (public domain and CC0 only). Openverse allows 200 anonymous searches a day, so
+    only the first `openverse_max` searches go there; the rest stay cached for another day."""
+    path = video_dir / "library" / "needs.json"
+    if not path.exists():
+        return []
+    needs = json.loads(path.read_text(encoding="utf-8"))
+    cache = SearchCache(video_dir / "library" / "search_cache.json")
+    gate = HostGate(OPENVERSE_GATE_S)
+
+    def openverse(query: str) -> list[dict]:
+        gate.wait()
+        found = search_openverse(query, limit=8)
+        return [f for f in found if not f["licence"].upper().startswith("CC BY")]
+
+    def one(numbered) -> list[dict]:
+        n, need = numbered
+        query = need["query"]
+        out: list[dict] = []
+        for name, search, to_item in (
+                ("commons", lambda: commons_search(query), lambda p: commons_item(p, f"need:{query}")),
+                ("openverse", lambda: openverse(query), lambda f: openverse_item(f, f"need:{query}")),
+                ("archive", lambda: archive_search(query), lambda a: dict(a, found_by=f"need:{query}"))):
+            if name == "openverse" and n >= openverse_max:
+                continue
+            try:
+                hits = [h for h in (to_item(x) for x in cache.get(f"{name}:{query}", search)) if h]
+            except Exception as exc:  # noqa: BLE001 - one failed search must not stop the rest
+                _log(f"  {name} search failed for {query}: {str(exc)[:100]}")
+                continue
+            out += hits[:per_query]
+        _log(f"  need '{query}': {len(out)}")
+        return out
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(one, enumerate(needs)))
+    out = [h for hits in results for h in hits]
+    _log(f"needs: {len(needs)} searches, {len(out)} candidates")
+    return out
 
 
 def pick_period(candidates: list[dict], cache: Path, limit: int = PERIOD_MAX) -> list[dict]:
@@ -623,12 +697,10 @@ def pick_period(candidates: list[dict], cache: Path, limit: int = PERIOD_MAX) ->
         input=[
             {"role": "system", "content": (
                 f"Pick up to {limit} photographs to use as period atmosphere in a documentary about "
-                "the John Wayne Gacy murders (Chicago and its north-west suburbs, 1970s, ending with "
-                "his December 1978 arrest and 1980 trial). Prefer real 1970s photographs of: streets "
-                "and traffic, houses and suburbs, cars, police, courts and public buildings, winter "
-                "and snow, offices, bars and taverns, shops, night scenes, ordinary people in public. "
-                "Avoid sport, celebrities, parades and festivals, art works, and anything clearly "
-                "outside the 1970s or Illinois. Return the numbers.")},
+                f"{profile().title} ({profile().region}; {profile().era}). Prefer real "
+                f"{profile().decade} photographs of: {', '.join(profile().settings)}, ordinary people in "
+                "public. Avoid sport, celebrities, parades and festivals, art works, and anything clearly "
+                f"outside the {profile().decade} or {profile().region_short}. Return the numbers.")},
             {"role": "user", "content": listing},
         ],
         text_format=Picks,
@@ -640,7 +712,7 @@ def pick_period(candidates: list[dict], cache: Path, limit: int = PERIOD_MAX) ->
 
 def stage_period(video_dir: Path) -> list[dict]:
     titles: list[str] = []
-    for category, depth in PERIOD_CATEGORIES:
+    for category, depth in ((c.category, c.depth) for c in profile().period_categories):
         for title in walk_category(category, max_depth=depth, skip=PERIOD_SKIP):
             if title not in titles:
                 titles.append(title)
@@ -679,12 +751,13 @@ def _existing_articles(titles: list[str], require_link: str | None) -> list[str]
 
 
 def stage_wikipedia(video_dir: Path) -> list[dict]:
-    articles = _existing_articles(WIKI_ARTICLES, None)
+    subject = profile().subject
+    listed = list(dict.fromkeys([subject] + profile().wikipedia_articles))
+    articles = _existing_articles(listed, None)
     entity_file = video_dir / "library" / "entities.json"
     if entity_file.exists():
-        extra = [e["name"] for e in json.loads(entity_file.read_text(encoding="utf-8"))
-                 if e["name"] not in WIKI_ARTICLES]
-        articles += [a for a in _existing_articles(extra, "John Wayne Gacy") if a not in articles]
+        extra = [e["name"] for e in json.loads(entity_file.read_text(encoding="utf-8")) if e["name"] not in listed]
+        articles += [a for a in _existing_articles(extra, subject) if a not in articles]
     _log(f"wikipedia: {len(articles)} articles: {articles}")
     out: list[dict] = []
     for article in articles:
@@ -693,7 +766,7 @@ def stage_wikipedia(video_dir: Path) -> list[dict]:
         except Exception as exc:  # noqa: BLE001
             _log(f"  {article}: {exc}")
             continue
-        if article != "John Wayne Gacy":
+        if article != subject:
             files = files[:WIKI_PER_ARTICLE]
         items = [wikipedia_item(p, f"wikipedia:{article}") for p in imageinfo(ENWIKI_API, files)]
         items = [i for i in items if i]
@@ -862,6 +935,20 @@ def library_entry(item: dict, previous: dict | None) -> dict:
     return entry
 
 
+FULL_STAGES = {"case", "entities", "period", "wikipedia", "web"}
+
+
+def merged_library(found: list[dict], previous: dict[str, dict], partial: bool) -> list[dict]:
+    """The library to write. A full harvest is the whole library; a partial one (say `--stages needs`) only
+    adds to it, so every picture already there is kept as it is."""
+    entries = list(found)
+    if partial:
+        have = {e["id"] for e in entries}
+        entries += [e for pid, e in previous.items() if pid not in have]
+    entries.sort(key=lambda e: ("cwon".index(e["id"][0]) if e["id"][0] in "cwon" else 9, e["id"]))
+    return entries
+
+
 def write_atomic(path: Path, data) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -871,12 +958,14 @@ def write_atomic(path: Path, data) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("video_dir")
-    parser.add_argument("--script", default="data/server_pull/gacy-2026-10-13/gacy_english_transcript.txt")
+    parser.add_argument("--script", default="", help="the narration script (default: <video_dir>/script.txt)")
     parser.add_argument("--stages", default="case,entities,period,wikipedia,web")
     parser.add_argument("--workers", type=int, default=WORKERS)
     args = parser.parse_args()
 
     video_dir = Path(args.video_dir)
+    import case
+    use(case.load(video_dir))
     lib_dir = video_dir / "library"
     lib_dir.mkdir(parents=True, exist_ok=True)
     stages = set(args.stages.split(","))
@@ -891,13 +980,15 @@ def main() -> None:
     if "case" in stages:
         candidates += stage_case()
     if "entities" in stages:
-        candidates += stage_entities(video_dir, Path(args.script))
+        candidates += stage_entities(video_dir, Path(args.script or video_dir / "script.txt"))
     if "period" in stages:
         candidates += stage_period(video_dir)
     if "wikipedia" in stages:
         candidates += stage_wikipedia(video_dir)
     if "web" in stages:
         candidates += stage_web(video_dir, blocked)
+    if "needs" in stages:
+        candidates += stage_needs(video_dir)
     _log(f"candidates: {len(candidates)}")
 
     # Merge with cache, give ids, drop by URL and by reported size before downloading.
@@ -958,8 +1049,8 @@ def main() -> None:
     previous = {}
     if library_path.exists():
         previous = {i["id"]: i for i in json.loads(library_path.read_text(encoding="utf-8")).get("items", [])}
-    entries = [library_entry(item, previous.get(item["id"])) for item in kept]
-    entries.sort(key=lambda e: ("cwon".index(e["id"][0]) if e["id"][0] in "cwon" else 9, e["id"]))
+    entries = merged_library([library_entry(item, previous.get(item["id"])) for item in kept], previous,
+                             partial=not FULL_STAGES <= stages)
     with _lock:  # caption.py may be writing too; it re-reads before every write
         write_atomic(library_path, {"items": entries})
 

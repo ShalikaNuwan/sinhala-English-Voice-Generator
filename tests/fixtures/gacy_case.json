@@ -1,0 +1,310 @@
+{
+ "title": "the John Wayne Gacy murders",
+ "subject": "John Wayne Gacy",
+ "keyword": "Gacy",
+ "region": "Chicago and its north-west suburbs (Des Plaines, Norwood Park), Illinois; Waterloo, Iowa",
+ "region_short": "Illinois",
+ "era": "1960s to 1994, centred on the December 1978 arrest and the 1980 trial",
+ "decade": "1970s",
+ "story_settings": "a police investigation, a house search, a 1980 trial, Illinois prisons, a 1994 execution",
+ "settings": [
+  "city and suburban streets",
+  "night roads",
+  "snow and winter driving",
+  "police cars",
+  "officers at work",
+  "police stations",
+  "offices",
+  "courtrooms",
+  "prisons",
+  "houses",
+  "construction work",
+  "shops",
+  "small towns",
+  "crowds seen at a distance"
+ ],
+ "commons_categories": [
+  "Category:John Wayne Gacy"
+ ],
+ "period_categories": [
+  {
+   "category": "Category:DOCUMERICA photographs of Chicago",
+   "depth": 0
+  },
+  {
+   "category": "Category:DOCUMERICA photographs of Illinois",
+   "depth": 0
+  },
+  {
+   "category": "Category:Chicago in the 1970s",
+   "depth": 1
+  },
+  {
+   "category": "Category:Black and white photographs of Chicago in the 1970s",
+   "depth": 0
+  }
+ ],
+ "wikipedia_articles": [
+  "John Wayne Gacy",
+  "Des Plaines, Illinois",
+  "Norwood Park Township, Cook County, Illinois",
+  "Cook County Jail",
+  "Menard Correctional Center",
+  "Stateville Correctional Center",
+  "Des Plaines River",
+  "Waterloo, Iowa",
+  "Anamosa State Penitentiary",
+  "Sam Amirante",
+  "William Kunkle",
+  "Rosalynn Carter",
+  "United States Junior Chamber",
+  "Robert Piest",
+  "Cook County Sheriff's Office",
+  "Norwood Park, Chicago",
+  "Chicago Police Department"
+ ],
+ "starter_entities": [
+  {
+   "name": "John Wayne Gacy",
+   "kind": "person"
+  },
+  {
+   "name": "Robert Piest",
+   "kind": "person"
+  },
+  {
+   "name": "Nisson Pharmacy",
+   "kind": "business"
+  },
+  {
+   "name": "Des Plaines Illinois",
+   "kind": "place"
+  },
+  {
+   "name": "8213 West Summerdale Avenue",
+   "kind": "place"
+  },
+  {
+   "name": "Norwood Park Township",
+   "kind": "place"
+  },
+  {
+   "name": "Cook County Criminal Courts Building",
+   "kind": "institution"
+  },
+  {
+   "name": "Cook County Jail",
+   "kind": "institution"
+  },
+  {
+   "name": "Menard Correctional Center",
+   "kind": "institution"
+  },
+  {
+   "name": "Stateville Correctional Center",
+   "kind": "institution"
+  },
+  {
+   "name": "Des Plaines River",
+   "kind": "place"
+  },
+  {
+   "name": "Waterloo Iowa",
+   "kind": "place"
+  },
+  {
+   "name": "Anamosa State Penitentiary",
+   "kind": "institution"
+  },
+  {
+   "name": "PDM Contractors",
+   "kind": "business"
+  },
+  {
+   "name": "Pogo the Clown",
+   "kind": "object"
+  },
+  {
+   "name": "Jaycees",
+   "kind": "institution"
+  },
+  {
+   "name": "Sam Amirante",
+   "kind": "person"
+  },
+  {
+   "name": "Terry Sullivan",
+   "kind": "person"
+  },
+  {
+   "name": "William Kunkle",
+   "kind": "person"
+  },
+  {
+   "name": "Joseph Kozenczak",
+   "kind": "person"
+  },
+  {
+   "name": "Jeffrey Rignall",
+   "kind": "person"
+  },
+  {
+   "name": "Michael Rossi",
+   "kind": "person"
+  },
+  {
+   "name": "David Cram",
+   "kind": "person"
+  },
+  {
+   "name": "Gregory Godzik",
+   "kind": "person"
+  },
+  {
+   "name": "John Butkovich",
+   "kind": "person"
+  },
+  {
+   "name": "Michael Bonnin",
+   "kind": "person"
+  },
+  {
+   "name": "John Mowery",
+   "kind": "person"
+  },
+  {
+   "name": "James Mazzara",
+   "kind": "person"
+  },
+  {
+   "name": "Rosalynn Carter",
+   "kind": "person"
+  }
+ ],
+ "public_figures": [
+  "dean corll",
+  "jimmy carter",
+  "john wayne gacy",
+  "robert ressler",
+  "rosalynn carter",
+  "tom dart",
+  "walter jacobson"
+ ],
+ "skip_entities": [
+  "alexander hamilton",
+  "california",
+  "chicago",
+  "cook county",
+  "defense diaries",
+  "democratic party",
+  "fbi",
+  "greyhound",
+  "illinois",
+  "iowa",
+  "john wayne",
+  "kfc",
+  "las vegas",
+  "motorola",
+  "nebraska",
+  "oldsmobile",
+  "plymouth",
+  "republican party",
+  "united states secret service",
+  "youtube"
+ ],
+ "archive_queries": [
+  "chicago",
+  "chicago street",
+  "chicago traffic",
+  "chicago night",
+  "snow",
+  "winter",
+  "winter driving",
+  "blizzard",
+  "snowstorm",
+  "police",
+  "police car",
+  "police patrol",
+  "police station",
+  "detective",
+  "crime laboratory",
+  "fingerprint",
+  "court",
+  "courtroom",
+  "trial",
+  "judge jury",
+  "prison",
+  "jail",
+  "penitentiary",
+  "inmate",
+  "suburb",
+  "suburban",
+  "housing",
+  "construction",
+  "contractor",
+  "night driving",
+  "city at night",
+  "street scenes",
+  "downtown",
+  "traffic",
+  "iowa",
+  "small town",
+  "main street",
+  "drugstore",
+  "pharmacy",
+  "newspaper",
+  "television news",
+  "missing",
+  "runaway",
+  "highway",
+  "illinois"
+ ],
+ "commons_footage_queries": [
+  "Chicago 1970s",
+  "Chicago 1960s",
+  "Chicago scenes",
+  "National Archives Chicago",
+  "National Archives police",
+  "National Archives prison",
+  "National Archives snow",
+  "National Archives winter",
+  "National Archives court",
+  "1970s police",
+  "1970s street",
+  "1970s traffic",
+  "prison 1970s",
+  "Iowa 1960s",
+  "snow 1970s",
+  "police car 1970s",
+  "courthouse",
+  "penitentiary",
+  "Illinois"
+ ],
+ "fallback_query": "chicago 1970s street",
+ "footage_years": [
+  1955,
+  1994
+ ],
+ "reveals": [
+  [
+   "cold open",
+   "remains of twenty-nine"
+  ],
+  [
+   "confession",
+   "that boy is dead"
+  ],
+  [
+   "house search",
+   "cook county sheriff.{0,20}went to gacy"
+  ],
+  [
+   "verdict",
+   "jury found gacy guilty"
+  ],
+  [
+   "execution",
+   "put to death by lethal injection"
+  ]
+ ]
+}

@@ -32,7 +32,9 @@ from app.config import settings  # noqa: E402
 
 COMMONS_API = "https://commons.wikimedia.org/w/api.php"
 OPENVERSE_API = "https://api.openverse.org/v1/images/"
-USER_AGENT = "sinhala-voice-doc/1.0 (local research build)"
+# Wikimedia's robot policy refuses a User-Agent that does not say who is calling and how to reach them.
+USER_AGENT = ("SinhalaEnglishVoice-Documentary/1.0 "
+              "(https://github.com/ShalikaNuwan/sinhala-English-Voice-Generator; documentary research) python-httpx")
 IMAGE_MODEL = os.getenv("IMAGE_MODEL", "gpt-image-2.5-flare")
 GENERATED_LICENCE = "Generated"
 GENERATED_ATTRIBUTION = "Generated with OpenAI gpt-image-2.5"

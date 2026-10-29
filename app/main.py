@@ -13,6 +13,7 @@ from .config import Settings, settings
 from .database import Database, utc_now
 from .pipeline import Pipeline
 from .schemas import KindUpdate, ProcessRequest, ProjectCreate, RegenerateRequest, TextUpdate
+from .video_api import router as video_router
 
 
 ALLOWED_EXTENSIONS = {".wav", ".mp3", ".m4a", ".mp4", ".webm", ".ogg", ".flac"}
@@ -26,6 +27,7 @@ pipeline = Pipeline(db, settings, audio)
 app = FastAPI(title="Sinhala-to-English Voice Production", version="0.1.0")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.mount("/media", StaticFiles(directory=settings.data_dir), name="media")
+app.include_router(video_router)
 
 
 def job_configuration(payload: ProcessRequest, config: Settings) -> dict:
