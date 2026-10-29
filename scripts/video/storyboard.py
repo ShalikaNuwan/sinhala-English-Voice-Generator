@@ -304,6 +304,8 @@ def guard_victims(entries: list[dict], library: dict[str, dict], bible: dict) ->
 
     changed = 0
     for e in entries:
+        if e.get("owner"):
+            continue                      # the owner chose this picture in the review page
         pid = e.get("library_id") or ""
         if pid not in owner or named(owner[pid], e["narration"]):
             continue
@@ -347,6 +349,7 @@ def replace_excluded(entries: list[dict], library: dict[str, dict]) -> int:
         if options:
             set_picture(e, library[options[0]])
             e["guarded"] = f"excluded picture {pid} replaced"
+            e.pop("owner", None)                  # no longer the picture the owner chose
             changed += 1
     return changed
 
@@ -363,7 +366,7 @@ def merge_repeats(entries: list[dict], scenes: list[dict]) -> int:
         prev = merged[-1] if merged else None
         same = (prev is not None and e.get("library_id") and e.get("library_id") == prev.get("library_id")
                 and e.get("media") == prev.get("media") == "photo" and e.get("scene") == prev.get("scene")
-                and e["end"] - prev["start"] <= MERGE_MAX_S)
+                and e["end"] - prev["start"] <= MERGE_MAX_S and not e.get("owner") and not prev.get("owner"))
         if same:
             prev["end"] = e["end"]
             prev["narration"] = f"{prev['narration']} {e['narration']}".strip()
@@ -388,6 +391,8 @@ def guard_dates(entries: list[dict], library: dict[str, dict], scenes: dict[int,
     """No photograph from after a scene's time: such a beat takes its next choice that is not, or holds."""
     changed = 0
     for e in entries:
+        if e.get("owner"):
+            continue                      # the owner chose this picture in the review page
         item = library.get(e.get("library_id") or "")
         scene = scenes.get(e.get("scene"))
         if not item or e.get("media") == "motion" or not from_the_future(item, scene):
@@ -414,6 +419,8 @@ def guard_mourning(entries: list[dict], library: dict[str, dict], bible: dict) -
             and not i.get("graphic") and not MOURNING.search(i.get("caption") or "")]
     changed = 0
     for e in entries:
+        if e.get("owner"):
+            continue                      # the owner chose this picture in the review page
         item = library.get(e.get("library_id") or "")
         if not item or not MOURNING.search(item.get("caption") or "") or e.get("look") == "memorial":
             continue
@@ -459,6 +466,8 @@ def speaker_pictures(entries: list[dict], bible: dict, library: dict[str, dict])
             uses[e["library_id"]] = uses.get(e["library_id"], 0) + 1
     changed = 0
     for position, e in enumerate(entries):
+        if e.get("owner"):
+            continue                      # the owner chose this picture in the review page
         if e.get("speaker_photo") and len(shown_in.get(e.get("library_id"), ())) > 1:
             e.pop("speaker_photo")                # chosen before this rule: choose again
         cards = [q for q in e.get("quotes") or [] if (q.get("style") or "card") in ("card", "memorial")]
@@ -521,6 +530,8 @@ def respect_links(entries: list[dict], library: dict[str, dict]) -> int:
     from plan_edit import usable
     changed = 0
     for e in entries:
+        if e.get("owner"):
+            continue                      # the owner chose this picture in the review page
         link = e.get("link")
         if link not in ("subject", "place_era", "action", "reframe") or e.get("media") == "motion":
             continue

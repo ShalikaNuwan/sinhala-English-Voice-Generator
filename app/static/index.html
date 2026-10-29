@@ -13,7 +13,12 @@
     <p>Transcribe, translate, adapt, review, and generate English narration one segment at a time.</p>
   </header>
 
-  <main>
+  <nav class="tabs">
+    <button class="tab active" data-tab="voice">Voice</button>
+    <button class="tab" data-tab="video">Video</button>
+  </nav>
+
+  <main id="voice-tab">
     <section class="card" id="create-card">
       <h2>New project</h2>
       <div class="grid">
@@ -62,7 +67,42 @@
     </section>
   </main>
 
+  <main id="video-tab" class="hidden">
+    <section class="card" id="films-card">
+      <h2>Films</h2>
+      <p class="muted">Films prepared with <code>documentary.py prepare</code>. Open one to review its shots.</p>
+      <div id="films" class="project-list"></div>
+    </section>
+
+    <section class="card hidden" id="film-card">
+      <div class="section-head">
+        <div><p class="eyebrow">Storyboard review</p><h2 id="film-title"></h2></div>
+        <button id="film-close" class="secondary">All films</button>
+      </div>
+      <div id="player-source" class="actions player-source" hidden></div>
+      <video id="player" controls preload="metadata" hidden></video>
+      <p id="film-summary" class="muted"></p>
+      <p id="film-final" class="final-link" hidden></p>
+      <div class="actions" id="filters"></div>
+      <div class="actions film-actions">
+        <button id="approve-unreviewed" class="approve-button">Approve all unreviewed</button>
+        <button id="rebuild">Rebuild review cut</button>
+        <label class="inline"><input type="checkbox" id="render-sound"> Mix music and effects</label>
+        <button id="render" class="secondary">Finalize video</button>
+      </div>
+      <p class="muted">Or in the terminal: <code id="render-command"></code></p>
+      <div id="job" class="progress-wrap hidden">
+        <div class="progress"><div id="job-bar"></div></div>
+        <p id="job-text" class="muted"></p>
+        <pre id="job-tail" class="job-tail" hidden></pre>
+      </div>
+      <p id="film-error" class="error" hidden></p>
+      <div id="scenes"></div>
+    </section>
+  </main>
+
   <footer>English narration is AI-generated; recordings marked "kept as is" are the original audio. Review meaning, pronunciation, and pacing before publishing.</footer>
   <script src="/static/app.js"></script>
+  <script src="/static/video.js"></script>
 </body>
 </html>

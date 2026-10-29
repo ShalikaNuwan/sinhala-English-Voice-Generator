@@ -175,6 +175,8 @@ def vary_subjects(entries: list[dict], bible: dict, library: dict[str, dict],
     changed = 0
     for k in range(1, len(entries)):
         prev, e = entries[k - 1], entries[k]
+        if e.get("owner"):
+            continue                      # the owner chose this picture in the review page
         pid = e.get("library_id")
         if not pid or pid != prev.get("library_id") or e.get("crop") or pid not in owner or len(owner[pid]) < 2:
             continue
@@ -216,7 +218,7 @@ def split_long_holds(entries: list[dict], library: dict[str, dict], video_dir: P
     for e in entries:
         item = library.get(e.get("library_id") or "")
         if (e["end"] - e["start"] <= SPLIT_OVER_S or e.get("media") != "photo" or not item or e.get("crop")
-                or e.get("quote_ids")):
+                or e.get("quote_ids") or e.get("owner")):
             out.append(e)
             continue
         box = located(locate, video_dir / item["file"], "the face, or the most telling detail")
@@ -311,6 +313,8 @@ def break_loops(entries: list[dict], library: dict[str, dict], video_dir: Path, 
     changed = 0
     for k in range(3, len(entries)):
         e = entries[k]
+        if e.get("owner"):
+            continue                      # the owner chose this picture in the review page
         if (e.get("media") != "photo" or e.get("quote_ids")
                 or framing(e) != framing(entries[k - 2]) or framing(entries[k - 1]) != framing(entries[k - 3])):
             continue
@@ -419,13 +423,16 @@ def illustrate_holds(entries: list[dict], video_dir: Path, bible: dict, scenes: 
     out: list[dict] = []
     made = 0
     for e in entries:
+        if e.get("owner"):
+            out.append(e)                 # the owner chose this picture in the review page
+            continue
         pid = e.get("library_id")
         # A near-duplicate of the picture just before is the same shot cut twice: it runs on as one.
         prev = out[-1] if out else None
         if (pid and prev and prev.get("library_id") and prev["library_id"] != pid
                 and same.get(pid, pid) == same.get(prev["library_id"], prev["library_id"])
                 and prev.get("scene") == e.get("scene") and not e.get("quote_ids") and not prev.get("crop")
-                and e["end"] - prev["start"] <= HOLD_MAX_S):
+                and not prev.get("owner") and e["end"] - prev["start"] <= HOLD_MAX_S):
             run_on(prev, e)
             shown.setdefault(same.get(pid, pid), []).append((e["start"], e["end"]))
             continue
@@ -464,6 +471,7 @@ def illustrate_holds(entries: list[dict], video_dir: Path, bible: dict, scenes: 
             first, target = None, dict(e)
         prev = out[-1] if out and not first else None
         adjacent = (prev is not None and prev.get("kind") == "generated" and prev.get("scene") == e.get("scene")
+                    and not prev.get("owner")
                     and abs(prev["end"] - target["start"]) < 0.05)
         scene = dict(scenes.get(e.get("scene"), {}))
         # A run of drawn pictures reads as a slideshow, not as an archive film.
@@ -575,6 +583,9 @@ def apply_ladder(entries: list[dict], library: dict[str, dict], video_dir: Path,
     last_generated = -1e9
     keep: list[dict] = []
     for at, e in enumerate(entries):
+        if e.get("owner"):
+            keep.append(e)                # the owner chose this picture in the review page
+            continue
         step = e.get("link")
         if step == "reframe":
             source = library.get((e.get("choices") or [None])[0] or "")
@@ -590,7 +601,7 @@ def apply_ladder(entries: list[dict], library: dict[str, dict], video_dir: Path,
                 continue
             step = "hold"
         if step == "hold":
-            if keep and can_hold(keep + [e], len(keep)):
+            if keep and not keep[-1].get("owner") and can_hold(keep + [e], len(keep)):
                 prev = keep[-1]
                 prev["end"] = e["end"]
                 prev["narration"] = f"{prev['narration']} {e['narration']}".strip()
