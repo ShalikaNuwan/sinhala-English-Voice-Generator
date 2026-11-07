@@ -58,6 +58,29 @@
       <div id="speaking-profile" class="profile hidden"></div>
       <div id="exports" class="exports"></div>
       <div id="review-summary" class="review-summary hidden"></div>
+      <div id="agent-bar" class="agent-bar hidden">
+        <div class="actions">
+          <button id="fix-sentences" class="secondary">Fix split sentences</button>
+          <button id="check-facts" class="secondary">Check all facts</button>
+        </div>
+        <p id="agent-progress" class="muted" hidden></p>
+        <p id="agent-result" class="muted" hidden></p>
+        <p id="fact-summary" class="fact-summary" hidden></p>
+      </div>
+      <form id="segment-finder" class="segment-finder hidden">
+        <div class="finder-row">
+          <input id="segment-search" type="search" placeholder="Segment number, or words from the text" autocomplete="off">
+          <button type="submit">Find</button>
+          <span class="finder-nav">
+            <button type="button" id="segment-prev" class="secondary">← Previous</button>
+            <button type="button" id="segment-next" class="secondary">Next →</button>
+            <button type="button" id="segment-all" class="secondary">All segments</button>
+          </span>
+        </div>
+        <p id="segment-position" class="muted"></p>
+        <p id="finder-note" class="muted" hidden></p>
+        <div id="search-results" class="search-results"></div>
+      </form>
       <div id="segments"></div>
     </section>
 
@@ -72,6 +95,18 @@
       <h2>Films</h2>
       <p class="muted">Films prepared with <code>documentary.py prepare</code>. Open one to review its shots.</p>
       <div id="films" class="project-list"></div>
+    </section>
+
+    <section class="card hidden" id="gather-card">
+      <div class="section-head">
+        <div><p class="eyebrow">Pictures and clips</p><h2 id="gather-title"></h2></div>
+        <button id="gather-close" class="secondary">All films</button>
+      </div>
+      <div id="gather-stages" class="stages"></div>
+      <p id="gather-note" class="muted"></p>
+      <div class="actions" id="gather-tabs"></div>
+      <p id="gather-error" class="error" hidden></p>
+      <div id="gather-grid" class="gather-grid"></div>
     </section>
 
     <section class="card hidden" id="film-card">

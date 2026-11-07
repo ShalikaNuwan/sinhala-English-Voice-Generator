@@ -1,0 +1,817 @@
+{
+ "start": 9859.32,
+ "end": 9913.56,
+ "theme": "light",
+ "smooth": 0.5,
+ "base": {
+  "kind": "map",
+  "bbox": [
+   30.41,
+   -87.262,
+   30.4315,
+   -87.218
+  ],
+  "zoom": 15
+ },
+ "camera": [
+  [
+   0.0,
+   0.5,
+   0.5,
+   1.0
+  ],
+  [
+   3.4,
+   0.5,
+   0.5,
+   1.03
+  ],
+  [
+   8.2,
+   0.52,
+   0.5,
+   1.05
+  ],
+  [
+   10.8,
+   0.66,
+   0.46,
+   1.3
+  ],
+  [
+   17.6,
+   0.6,
+   0.46,
+   1.32
+  ],
+  [
+   20.6,
+   0.45,
+   0.46,
+   1.5
+  ],
+  [
+   33.8,
+   0.46,
+   0.46,
+   1.54
+  ],
+  [
+   35.6,
+   0.4,
+   0.46,
+   1.4
+  ],
+  [
+   44.4,
+   0.41,
+   0.46,
+   1.42
+  ],
+  [
+   46.6,
+   0.44,
+   0.42,
+   1.5
+  ],
+  [
+   54.24,
+   0.44,
+   0.41,
+   1.54
+  ]
+ ],
+ "hud": [
+  {
+   "kind": "stamp",
+   "text": "February 15, 1978",
+   "sub": "Pensacola, Florida",
+   "at": 4.2,
+   "until": 10.6
+  },
+  {
+   "kind": "clock",
+   "start": "1:30",
+   "end": "1:30",
+   "move_from": 0,
+   "move_to": 1,
+   "label": "ABOUT 1:30 AM",
+   "at": 6.4,
+   "until": 17.4
+  },
+  {
+   "kind": "note",
+   "text": "Street as mapped today \u00b7 positions of the stop and the chase illustrative \u00b7 Map: \u00a9 OpenStreetMap contributors",
+   "at": 0.2
+  }
+ ],
+ "elements": [
+  {
+   "kind": "route",
+   "points": [
+    {
+     "ll": [
+      30.42121,
+      -87.218
+     ]
+    },
+    {
+     "ll": [
+      30.42068,
+      -87.22093
+     ]
+    },
+    {
+     "ll": [
+      30.42012,
+      -87.22387
+     ]
+    },
+    {
+     "ll": [
+      30.42002,
+      -87.2268
+     ]
+    },
+    {
+     "ll": [
+      30.42017,
+      -87.22973
+     ]
+    },
+    {
+     "ll": [
+      30.42031,
+      -87.23267
+     ]
+    },
+    {
+     "ll": [
+      30.42042,
+      -87.2356
+     ]
+    },
+    {
+     "ll": [
+      30.42057,
+      -87.23853
+     ]
+    },
+    {
+     "ll": [
+      30.42069,
+      -87.24147
+     ]
+    },
+    {
+     "ll": [
+      30.4208,
+      -87.2444
+     ]
+    },
+    {
+     "ll": [
+      30.42092,
+      -87.24733
+     ]
+    },
+    {
+     "ll": [
+      30.42108,
+      -87.25027
+     ]
+    },
+    {
+     "ll": [
+      30.42119,
+      -87.2532
+     ]
+    },
+    {
+     "ll": [
+      30.42134,
+      -87.25613
+     ]
+    },
+    {
+     "ll": [
+      30.42145,
+      -87.25907
+     ]
+    },
+    {
+     "ll": [
+      30.42129,
+      -87.262
+     ]
+    }
+   ],
+   "from": 0.2,
+   "to": 2.2,
+   "dash": false,
+   "accent": false,
+   "width": 0.2,
+   "head": false
+  },
+  {
+   "kind": "tag",
+   "text": "WHILE THE SEARCH CONTINUED",
+   "xy": [
+    0.5,
+    0.2
+   ],
+   "at": 0.3,
+   "until": 3.6,
+   "offset": [
+    0,
+    0
+   ],
+   "leader": false,
+   "scale": 1.4
+  },
+  {
+   "kind": "tag",
+   "text": "BUNDY WAS STILL MOVING",
+   "sub": "through Florida",
+   "xy": [
+    0.5,
+    0.72
+   ],
+   "at": 2.0,
+   "until": 7.9,
+   "offset": [
+    0,
+    0
+   ],
+   "leader": false,
+   "scale": 1.4,
+   "accent": true
+  },
+  {
+   "kind": "tag",
+   "text": "WEST CERVANTES STREET",
+   "ll": [
+    30.42031,
+    -87.2325
+   ],
+   "at": 11.2,
+   "until": 15.7,
+   "offset": [
+    0,
+    5.2
+   ],
+   "leader": false,
+   "scale": 1.2
+  },
+  {
+   "kind": "photo",
+   "library_id": "c0388",
+   "xy": [
+    0.865,
+    0.585
+   ],
+   "h": 8,
+   "at": 8.2,
+   "until": 20.2,
+   "angle": 1.6
+  },
+  {
+   "kind": "tag",
+   "text": "OFFICER DAVID LEE",
+   "sub": "Pensacola Police, on patrol",
+   "xy": [
+    0.865,
+    0.585
+   ],
+   "at": 8.6,
+   "until": 20.2,
+   "offset": [
+    0,
+    5.8
+   ],
+   "leader": false,
+   "scale": 1.15,
+   "char_s": 0.02
+  },
+  {
+   "kind": "route",
+   "points": [
+    {
+     "ll": [
+      30.41976,
+      -87.2245
+     ]
+    },
+    {
+     "ll": [
+      30.41973,
+      -87.22579
+     ]
+    },
+    {
+     "ll": [
+      30.41975,
+      -87.22707
+     ]
+    },
+    {
+     "ll": [
+      30.41986,
+      -87.22836
+     ]
+    },
+    {
+     "ll": [
+      30.41988,
+      -87.22964
+     ]
+    },
+    {
+     "ll": [
+      30.41992,
+      -87.23093
+     ]
+    },
+    {
+     "ll": [
+      30.42,
+      -87.23221
+     ]
+    },
+    {
+     "ll": [
+      30.42005,
+      -87.2335
+     ]
+    }
+   ],
+   "from": 10.9,
+   "to": 13.2,
+   "dash": true,
+   "accent": false,
+   "width": 0.26,
+   "head": true
+  },
+  {
+   "kind": "icon",
+   "icon": "car",
+   "ll": [
+    30.42077,
+    -87.2365
+   ],
+   "size": 3.6,
+   "at": 13.5,
+   "until": 18.0,
+   "accent": true
+  },
+  {
+   "kind": "tag",
+   "text": "AN ORANGE VOLKSWAGEN BEETLE",
+   "ll": [
+    30.42077,
+    -87.2365
+   ],
+   "at": 13.8,
+   "until": 20.2,
+   "offset": [
+    0,
+    -6.0
+   ],
+   "leader": false,
+   "scale": 1.2,
+   "accent": true
+  },
+  {
+   "kind": "tag",
+   "text": "HE BECAME SUSPICIOUS",
+   "ll": [
+    30.42077,
+    -87.2365
+   ],
+   "at": 15.9,
+   "until": 18.0,
+   "offset": [
+    0,
+    5.4
+   ],
+   "leader": false,
+   "scale": 1.15
+  },
+  {
+   "kind": "route",
+   "points": [
+    {
+     "ll": [
+      30.42077,
+      -87.2365
+     ]
+    },
+    {
+     "ll": [
+      30.42082,
+      -87.23793
+     ]
+    },
+    {
+     "ll": [
+      30.42088,
+      -87.23936
+     ]
+    },
+    {
+     "ll": [
+      30.42094,
+      -87.24079
+     ]
+    },
+    {
+     "ll": [
+      30.42099,
+      -87.24221
+     ]
+    },
+    {
+     "ll": [
+      30.42106,
+      -87.24364
+     ]
+    },
+    {
+     "ll": [
+      30.42112,
+      -87.24507
+     ]
+    },
+    {
+     "ll": [
+      30.42119,
+      -87.2465
+     ]
+    }
+   ],
+   "from": 18.0,
+   "to": 20.4,
+   "dash": false,
+   "accent": true,
+   "width": 0.28,
+   "head": true
+  },
+  {
+   "kind": "route",
+   "points": [
+    {
+     "ll": [
+      30.42005,
+      -87.2335
+     ]
+    },
+    {
+     "ll": [
+      30.42012,
+      -87.23526
+     ]
+    },
+    {
+     "ll": [
+      30.42024,
+      -87.23701
+     ]
+    },
+    {
+     "ll": [
+      30.42029,
+      -87.23877
+     ]
+    },
+    {
+     "ll": [
+      30.42038,
+      -87.24053
+     ]
+    },
+    {
+     "ll": [
+      30.42044,
+      -87.24229
+     ]
+    },
+    {
+     "ll": [
+      30.4205,
+      -87.24404
+     ]
+    },
+    {
+     "ll": [
+      30.4206,
+      -87.2458
+     ]
+    }
+   ],
+   "from": 18.0,
+   "to": 20.6,
+   "dash": true,
+   "accent": false,
+   "width": 0.26,
+   "head": true
+  },
+  {
+   "kind": "tag",
+   "text": "FOLLOWED FOR SEVERAL BLOCKS",
+   "ll": [
+    30.42069,
+    -87.2415
+   ],
+   "at": 18.2,
+   "until": 20.3,
+   "offset": [
+    0,
+    5.4
+   ],
+   "leader": false,
+   "scale": 1.15
+  },
+  {
+   "kind": "icon",
+   "icon": "car",
+   "ll": [
+    30.42091,
+    -87.2465
+   ],
+   "size": 3.6,
+   "at": 20.4,
+   "accent": true
+  },
+  {
+   "kind": "pulse",
+   "ll": [
+    30.42091,
+    -87.2465
+   ],
+   "at": 20.4,
+   "until": 24.0,
+   "radius": 3.2,
+   "period": 1.0,
+   "accent": true
+  },
+  {
+   "kind": "tag",
+   "text": "PULLED OVER",
+   "ll": [
+    30.42091,
+    -87.2465
+   ],
+   "at": 20.5,
+   "until": 34.5,
+   "offset": [
+    0,
+    4.8
+   ],
+   "leader": false,
+   "scale": 1.2
+  },
+  {
+   "kind": "card",
+   "id": "stop",
+   "xy": [
+    0.54,
+    0.25
+   ],
+   "w": 0.2,
+   "at": 21.6,
+   "until": 34.5,
+   "title": "THE REGISTRATION",
+   "angle": 0.0,
+   "lines": [
+    {
+     "text": "the information came back",
+     "at": 23.0
+    },
+    {
+     "text": "the car: reported stolen",
+     "at": 25.7,
+     "accent": true
+    },
+    {
+     "text": "the driver ordered out",
+     "at": 27.5
+    },
+    {
+     "text": "to Lee, just a stolen car",
+     "at": 31.8
+    }
+   ]
+  },
+  {
+   "kind": "photo",
+   "library_id": "c0011",
+   "xy": [
+    0.2,
+    0.44
+   ],
+   "h": 20,
+   "at": 34.9,
+   "until": 44.6,
+   "angle": -1.4
+  },
+  {
+   "kind": "tag",
+   "text": "TED BUNDY",
+   "sub": "FBI Ten Most Wanted photo",
+   "xy": [
+    0.2,
+    0.44
+   ],
+   "at": 35.2,
+   "until": 44.6,
+   "offset": [
+    0,
+    12.6
+   ],
+   "leader": false,
+   "scale": 1.15,
+   "char_s": 0.02
+  },
+  {
+   "kind": "tag",
+   "text": "LEE HAD NO IDEA",
+   "xy": [
+    0.6,
+    0.33
+   ],
+   "at": 35.1,
+   "until": 41.2,
+   "offset": [
+    0,
+    0
+   ],
+   "leader": false,
+   "scale": 1.4
+  },
+  {
+   "kind": "tag",
+   "text": "ONE OF THE FBI'S TEN MOST WANTED",
+   "xy": [
+    0.6,
+    0.42
+   ],
+   "at": 37.7,
+   "until": 41.2,
+   "offset": [
+    0,
+    0
+   ],
+   "leader": false,
+   "scale": 1.3,
+   "accent": true,
+   "char_s": 0.03
+  },
+  {
+   "kind": "tag",
+   "text": "LEE TRIED TO TAKE HIM INTO CUSTODY",
+   "xy": [
+    0.6,
+    0.33
+   ],
+   "at": 41.6,
+   "until": 45.0,
+   "offset": [
+    0,
+    0
+   ],
+   "leader": false,
+   "scale": 1.25
+  },
+  {
+   "kind": "route",
+   "points": [
+    {
+     "ll": [
+      30.42091,
+      -87.2465
+     ]
+    },
+    {
+     "ll": [
+      30.42401,
+      -87.2465
+     ]
+    },
+    {
+     "ll": [
+      30.42401,
+      -87.24889999999999
+     ]
+    }
+   ],
+   "from": 45.2,
+   "to": 47.6,
+   "dash": true,
+   "accent": true,
+   "width": 0.28,
+   "head": true
+  },
+  {
+   "kind": "tag",
+   "text": "HE BROKE AWAY AND RAN",
+   "ll": [
+    30.42091,
+    -87.2465
+   ],
+   "at": 45.0,
+   "offset": [
+    13.5,
+    -16.6
+   ],
+   "leader": false,
+   "scale": 1.25,
+   "accent": true
+  },
+  {
+   "kind": "icon",
+   "icon": "person",
+   "ll": [
+    30.42401,
+    -87.24889999999999
+   ],
+   "size": 4.2,
+   "at": 47.4,
+   "accent": true
+  },
+  {
+   "kind": "route",
+   "points": [
+    {
+     "ll": [
+      30.42091,
+      -87.2458
+     ]
+    },
+    {
+     "ll": [
+      30.42321,
+      -87.2458
+     ]
+    },
+    {
+     "ll": [
+      30.42321,
+      -87.2477
+     ]
+    }
+   ],
+   "from": 47.8,
+   "to": 50.0,
+   "dash": true,
+   "accent": false,
+   "width": 0.26,
+   "head": true
+  },
+  {
+   "kind": "tag",
+   "text": "LEE PURSUED HIM",
+   "ll": [
+    30.42091,
+    -87.2465
+   ],
+   "at": 47.9,
+   "offset": [
+    13.5,
+    -12.4
+   ],
+   "leader": false,
+   "scale": 1.25
+  },
+  {
+   "kind": "tag",
+   "text": "THE OFFICER FIRED",
+   "ll": [
+    30.42091,
+    -87.2465
+   ],
+   "at": 49.4,
+   "offset": [
+    13.5,
+    -8.2
+   ],
+   "leader": false,
+   "scale": 1.25
+  },
+  {
+   "kind": "tag",
+   "text": "BUNDY KEPT TRYING TO ESCAPE",
+   "ll": [
+    30.42091,
+    -87.2465
+   ],
+   "at": 51.8,
+   "offset": [
+    13.5,
+    -4.0
+   ],
+   "leader": false,
+   "scale": 1.25,
+   "accent": true
+  }
+ ]
+}

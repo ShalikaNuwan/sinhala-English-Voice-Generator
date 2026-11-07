@@ -47,3 +47,18 @@ def test_the_full_film_asks_for_room_for_the_master_twice_over():
     # 98.6 minutes at full quality: about 8.5 GB of master, held twice near the end, plus 2 GB.
     need = build.space_needed(98.6 * 60)
     assert 19e9 < need < 21e9
+
+
+def test_a_name_card_comes_up_as_its_name_is_first_spoken_in_its_shot():
+    words = [{"word": "people", "start": 475.5}, {"word": "Edmund", "start": 478.5}, {"word": "Kemper,", "start": 478.7},
+             {"word": "Kemper", "start": 490.0}]
+    named = {"index": 52, "start": 474.05, "end": 497.72,
+             "overlay": {"style": "name", "text": "Edmund Kemper", "subtext": "named in IQ lists"}}
+    unspoken = {"index": 53, "start": 497.72, "end": 505.0, "overlay": {"style": "name", "text": "Ann Rule", "in_at": 3}}
+    stamp = {"index": 54, "start": 505.0, "end": 512.0, "overlay": {"style": "stamp", "text": "1974"}}
+
+    build.cue_name_cards([named, unspoken, stamp], words)
+
+    assert named["overlay"]["in_at"] == 4.45
+    assert "in_at" not in unspoken["overlay"]   # never said in its shot: up from the start as before
+    assert "in_at" not in stamp["overlay"]

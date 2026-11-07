@@ -38,7 +38,9 @@ SENTENCE_BATCH = 30       # sentences planned per model call in beat mode
 SENTENCE_CONTEXT = 6      # sentences of story shown before and after a batch
 BEAT_MAX_S = 20.0         # a beat longer than this splits at the sentence nearest its middle
 BEAT_MIN_S = 3.0          # a beat shorter than this joins the one before it
-FREE_LICENCE = re.compile(r"public domain|\bpdm\b|cc0|no restrictions", re.I)
+# Public domain, CC0, and CC BY / CC BY-SA (credited by name in credits.md; the owner allowed them on 2026-11-03).
+# NonCommercial and NoDerivatives licences stay out: the film is published, and it crops and grades pictures.
+FREE_LICENCE = re.compile(r"public domain|\bpdm\b|cc0|no restrictions|^\s*cc[ -]by(?:-sa)?(?:\s+\d(?:\.\d)?)?\s*$", re.I)
 REUSE_WINDOW = 12         # shots before the same picture may come back
 MINUTES_PER_USE = 12.0    # a picture may appear once per this many minutes of film (and at least 4 times)
 COLOUR_TARGET = 0.60      # the share of photographs in colour the cut leans toward
@@ -226,7 +228,7 @@ BEAT_SYSTEM = SYSTEM.replace(
 
 
 def free_to_use(item: dict) -> bool:
-    """Public domain, CC0, or made for this film: nothing that needs a credit or carries a claim."""
+    """Public domain, CC0, CC BY or CC BY-SA (credited), or made for this film."""
     if item.get("rights") in ("generated", "original"):
         return True
     return item.get("rights") == "free" and bool(FREE_LICENCE.search(item.get("licence") or ""))

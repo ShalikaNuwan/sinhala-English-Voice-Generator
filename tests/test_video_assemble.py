@@ -179,11 +179,11 @@ def test_print_blurs_and_darkens_a_cover_copy_for_the_ground():
     assert f"colorchannelmixer=rr={assemble.PRINT_DARKEN}:" in ground and assemble.PRINT_DARKEN < 0.5  # darkened
 
 
-def test_print_fits_a_portrait_within_84_percent_of_the_height_and_never_crops_it():
+def test_print_fits_a_portrait_within_92_percent_of_the_height_and_never_crops_it():
     chain = assemble.print_chain(1505, 2000, 300, 1920, 1080, FPS)
     face = chain[chain.index("[fg0]"):chain.index("[print]")]
 
-    assert "scale=3226:1814:force_original_aspect_ratio=decrease" in face  # 0.84 of 3840x2160
+    assert "scale=3532:1988:force_original_aspect_ratio=decrease" in face  # 0.92 of 3840x2160
     assert "crop" not in face
     assert "pad=iw+" in face and f"color={assemble.PRINT_BORDER}" in face  # the thin off-white border
 
@@ -191,8 +191,8 @@ def test_print_fits_a_portrait_within_84_percent_of_the_height_and_never_crops_i
 def test_print_fits_a_wide_picture_by_its_width():
     chain = assemble.print_chain(4000, 1000, 300, 1920, 1080, FPS)
 
-    assert "scale=3226:1814:force_original_aspect_ratio=decrease" in chain  # width binds for 4:1
-    assert assemble.PRINT_FIT == pytest.approx(0.84)
+    assert "scale=3532:1988:force_original_aspect_ratio=decrease" in chain  # width binds for 4:1
+    assert assemble.PRINT_FIT == pytest.approx(0.92)
 
 
 def test_print_casts_a_soft_shadow_and_centres_the_print():
@@ -313,6 +313,19 @@ def test_a_short_shot_pulls_the_overlay_out_before_it_ends():
     start, length = re.search(r"t=out:st=([0-9.]+):d=([0-9.]+)", fades).groups()
 
     assert float(start) + float(length) <= 2.6 - 0.1
+
+
+def test_a_cued_overlay_fades_in_at_its_cue_and_stays_up_as_long():
+    fades = assemble.overlay_fades(23.0, in_at=4.45)
+    assert fades == "fade=t=in:st=4.450:d=0.400:alpha=1,fade=t=out:st=7.350:d=0.300:alpha=1"
+    held = assemble.overlay_fades(23.0, float("inf"), in_at=4.45)
+    assert held.startswith("fade=t=in:st=4.450") and "t=out:st=22.550" in held
+
+
+def test_a_cue_too_late_to_read_comes_up_early_enough_instead():
+    fades = assemble.overlay_fades(6.0, in_at=5.8)
+    start, = re.search(r"t=in:st=([0-9.]+)", fades).groups()
+    assert float(start) < 5.8 and assemble.overlay_in_at({"in_at": 5.8}) == 5.8 and assemble.overlay_in_at(None) == 0.3
 
 
 def test_a_shot_too_short_to_read_gets_no_overlay():
@@ -565,6 +578,19 @@ def test_a_shot_with_an_overlay_lays_the_png_over_with_its_fades(tmp_path):
     assert "overlay=0:0" in graph
 
 
+def test_a_name_card_marked_hold_stays_up_for_the_whole_shot(tmp_path):
+    asset = still(tmp_path / "0001.jpg")
+    card = tmp_path / "overlay.png"
+    Image.new("RGBA", (640, 360)).save(card)
+    held = shot(end=13.0, overlay={"style": "name", "text": "Ann Rule", "subtext": "crime writer", "hold": True})
+    argv = assemble.shot_clip(held, clip_plan(frames=390), asset, tmp_path / "out.mp4", 640, 360, FPS, overlay=card)
+    graph = argv[argv.index("-filter_complex") + 1]
+    start, length = re.search(r"t=out:st=([0-9.]+):d=([0-9.]+)", graph).groups()
+
+    assert float(start) + float(length) == pytest.approx(13.0 - assemble.OVERLAY_END_MARGIN_S)
+    assert assemble.overlay_out_by({"style": "name", "text": "Ann Rule"}, False) == assemble.OVERLAY_OUT_BY
+
+
 def test_fades_to_and_from_black_are_frame_exact_and_sit_over_the_overlay(tmp_path):
     asset = still(tmp_path / "0001.jpg")
     card = tmp_path / "overlay.png"
@@ -690,7 +716,7 @@ def test_a_v2_cut_renders_locked_to_the_narration(tmp_path):
         assert "color_range=tv" in probe(piece, "stream=color_range"), piece.name
     # the dip to black bottoms out on the planned cut at 3.0 s, and the picture is back after it
     assert mean_luma(frame_at(out, 3.0 - 1 / 15, tmp_path / "dip_out.png")) < 12
-    assert mean_luma(frame_at(out, 3.01, tmp_path / "dip_in.png")) < 12
+    assert mean_luma(frame_at(out, 3.01, tmp_path / "dip_in.png")) < 16   # the first frame out of black
     assert mean_luma(frame_at(out, 4.2, tmp_path / "after.png")) > 30
     # the portrait is a print: blurred copy at the edges, never black bars
     opening = frame_at(out, 0.9, tmp_path / "print.png")
@@ -746,12 +772,16 @@ def test_a_small_print_is_held_to_its_maximum_enlargement():
     large = assemble.print_chain(1505, 2000, 90, 1920, 1080, 30)
     # 255 px tall, at most 3x on screen, composed at 2x: a box no taller than 1530 canvas pixels.
     assert "scale=1086:1530:" in small
-    assert "scale=3226:1814:" in large
+    assert "scale=3532:1988:" in large
 
 
-def test_a_print_moves_right_of_an_overlay():
+def test_a_print_stays_centred_under_a_name_card():
+    assert assemble.PRINT_OVERLAY_CLEAR == 0.0
+
+
+def test_a_print_can_move_right_of_a_cleared_left_part():
     plain = assemble.print_chain(1505, 2000, 90, 1920, 1080, 30)
-    beside = assemble.print_chain(1505, 2000, 90, 1920, 1080, 30, clear_left=assemble.PRINT_OVERLAY_CLEAR)
+    beside = assemble.print_chain(1505, 2000, 90, 1920, 1080, 30, clear_left=0.40)
     assert "overlay=0+(3840-w)/2:(H-h)/2," in plain
     # 40% of a 3840-wide canvas kept clear on the left, a 3.5% margin on the right.
     assert "overlay=1536+(2170-w)/2:(H-h)/2," in beside
@@ -1074,6 +1104,13 @@ def test_a_print_under_a_speech_card_moves_into_the_left_of_the_frame(tmp_path):
     graph = lambda argv: argv[argv.index("-filter_complex") + 1]
     assert "overlay=0+(" in graph(plain) and "overlay=0+(" not in graph(carded)
     assert assemble.carded(shot(quotes=[{"style": "exhibit"}])) is False
+
+
+def test_a_crop_of_an_odd_sized_photograph_never_reaches_past_its_edge(tmp_path):
+    asset = still(tmp_path / "0001.jpg", size=(600, 983))
+    argv = assemble.shot_clip(shot(crop=[0.0, 0.0, 0.4464, 1.0]), clip_plan(), asset, tmp_path / "a.mp4", 640, 360, FPS)
+    graph = argv[argv.index("-filter_complex") + 1]
+    assert graph.startswith("[0:v]crop=268:982:0:0,")
 
 
 def test_a_reframed_shot_runs_only_its_located_crop_and_is_treated_by_the_crops_shape(tmp_path):

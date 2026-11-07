@@ -402,8 +402,9 @@ def _board_ground(size: tuple[int, int]) -> Image.Image:
     return Image.merge("RGB", (value, value.point(lambda v: v * 0.99), value.point(lambda v: v * 0.97)))
 
 
-def _print_image(path, w: int, h: int) -> Image.Image:
-    """A library photograph as a print: lightly muted (colour still reads as colour), cool, bordered in off-white."""
+def _print_image(path, w: int, h: int, crop=None) -> Image.Image:
+    """A library photograph as a print: lightly muted (colour still reads as colour), cool, bordered in off-white.
+    `crop` (left, top, right, bottom as fractions) keeps only that part of the photograph."""
     with Image.open(path) as source:
         if source.mode in ("RGBA", "LA", "P"):
             source = source.convert("RGBA")
@@ -411,6 +412,14 @@ def _print_image(path, w: int, h: int) -> Image.Image:
             flat.paste(source, mask=source.getchannel("A"))
             source = flat
         picture = source.convert("RGB")
+    if crop:
+        x0, y0, x1, y1 = crop
+        picture = picture.crop((round(picture.width * x0), round(picture.height * y0),
+                                round(picture.width * x1), round(picture.height * y1)))
+    return _as_print(picture, w, h)
+
+
+def _as_print(picture: Image.Image, w: int, h: int) -> Image.Image:
     border = max(3, round(min(w, h) * 0.035))
     inner = ImageOps.fit(picture, (w - 2 * border, h - 2 * border), Image.Resampling.LANCZOS)
     inner = ImageEnhance.Color(inner).enhance(0.80)
@@ -438,7 +447,8 @@ def _paste_with_shadow(board: Image.Image, image: Image.Image, centre, angle: fl
     board.paste(turned, (x, y), turned)
 
 
-def _label_tag(label: str, sub: str | None, size: tuple[float, float], board_h: int) -> Image.Image:
+def _label_tag(label: str, sub: str | None, size: tuple[float, float], board_h: int,
+               ink: tuple[int, int, int] = PAPER_INK) -> Image.Image:
     w, h = round(size[0]), round(size[1])
     tag = Image.new("RGB", (w, h), PAPER)
     grain = Image.effect_noise((w, h), 10).point(lambda v: 128 + (v - 128) * 0.35)
@@ -447,7 +457,7 @@ def _label_tag(label: str, sub: str | None, size: tuple[float, float], board_h: 
     fnt = graphics.font(graphics.TYPEWRITER, max(6, round(board_h * LABEL_SIZE)))
     sub_fnt = graphics.font(graphics.TYPEWRITER, max(6, round(board_h * SUB_SIZE)))
     pad_x, pad_y = board_h * LABEL_SIZE * 0.6, board_h * LABEL_SIZE * 0.42
-    draw.text((pad_x, pad_y), label, font=fnt, fill=PAPER_INK)
+    draw.text((pad_x, pad_y), label, font=fnt, fill=ink)
     if sub:
         draw.text((pad_x, pad_y + graphics.line_height(fnt, 1.15)), sub, font=sub_fnt, fill=PAPER_GREY)
     return tag
@@ -595,6 +605,550 @@ def evidence_board(pins: list[dict], links, out_path, seconds: float = 9.0, *, w
                 current.paste(pin, (round(item["pin"][0] - pin.width / 2), round(item["pin"][1] - pin.height / 2)), pin)
             cx, cy, zoom = camera_at(t, keys)
             out.write(shoot(current, view_box(cx, cy, zoom, board), (width, height)))
+    return Path(out_path)
+
+
+# --- reveal board ---------------------------------------------------------------
+
+REVEAL_SUPERSAMPLE = 3        # drawn at three times the frame size: its close-ups push in a long way
+REVEAL_RING = (0.42, 0.355)   # the ring of prints around the subject: its radii as board fractions
+REVEAL_PRINT_H = 0.15         # a portrait print's height as a board fraction; wider prints keep its area
+REVEAL_PRINT_ASPECT = 0.78    # the portrait that REVEAL_PRINT_H is for
+REVEAL_SUBJECT_H = 0.30       # the unknown print in the middle, later the subject's photograph
+REVEAL_TAG_SCALE = 0.75       # tags are typed smaller than on an evidence board: fourteen prints share this one
+REVEAL_MARGIN = 0.008         # nothing closer to the board's edge than this fraction of it
+REVEAL_TAG_GAP = 0.008        # between a print and its tag, as a board fraction
+REVEAL_LAND_S = 0.55          # a print drops onto the board over this long
+REVEAL_TAG_S = 0.35           # its tag follows it down
+REVEAL_PIN_S = 0.20           # and its pin pops in as it lands
+REVEAL_CLOSE = 0.62           # a close-up shows a print and its tag at this fraction of the frame height
+REVEAL_CLOSE_MAX = 3.2
+REVEAL_PAD = 0.10             # bare board round the layout, each side, so a close-up of an edge print can centre it
+REVEAL_SWEEP_ZOOM = (1.45, 1.20)  # quick prints land under a camera that pulls back between these zooms
+REVEAL_STRING_S = 0.60        # each string draws over this long
+REVEAL_FLASH_S = 0.10         # the unknown print flares white,
+REVEAL_DEVELOP_S = 0.45       # then the photograph comes up out of the white
+REVEAL_PUSH = 1.5             # after the reveal the camera pushes in this far on the subject
+CAMERA_SMOOTH_S = 0.28        # the camera's keyframes are joined by straight runs, then softened over this long
+FLASH = (255, 252, 245)
+
+
+def ring_slots(count: int, board: tuple[int, int], radii=REVEAL_RING, samples: int = 1440) -> list[tuple[float, float]]:
+    """`count` points evenly spaced along an ellipse round the board's centre, as board fractions.
+
+    The first is at twelve o'clock and they run clockwise. The spacing is even in board pixels, not
+    in angle, so prints at the narrow ends of the ellipse are not crowded together.
+    """
+    if count < 1:
+        raise ValueError("a reveal board needs at least one print round the subject")
+    bw, bh = board
+    rx, ry = radii
+    points = [(0.5 + rx * math.sin(2 * math.pi * i / samples), 0.5 - ry * math.cos(2 * math.pi * i / samples))
+              for i in range(samples + 1)]
+    lengths = [0.0]
+    for (x0, y0), (x1, y1) in zip(points, points[1:]):
+        lengths.append(lengths[-1] + math.hypot((x1 - x0) * bw, (y1 - y0) * bh))
+    step = lengths[-1] / count
+    out, j = [], 0
+    for k in range(count):
+        target = k * step
+        while lengths[j + 1] < target:
+            j += 1
+        out.append(points[j])
+    return out
+
+
+def _anchor(item: dict, towards, inset: float = 0.80) -> tuple[float, float]:
+    """The point on a print, `inset` of the way to its edge, that faces `towards`: where its pin goes."""
+    dx, dy = towards[0] - item["cx"], towards[1] - item["cy"]
+    lx, ly = rotate_point(dx, dy, -item["angle"])
+    if lx == 0 and ly == 0:
+        return item["cx"], item["cy"]
+    s = min(item["w"] / 2 * inset / abs(lx) if lx else math.inf, item["h"] / 2 * inset / abs(ly) if ly else math.inf)
+    px, py = rotate_point(lx * s, ly * s, item["angle"])
+    return item["cx"] + px, item["cy"] + py
+
+
+def reveal_layout(aspects: list[float], labels: list[tuple[str, str | None]], board: tuple[int, int], *,
+                  subject_aspect: float, subject_labels: list[tuple[str, str | None]], slots=None, scales=None,
+                  seed: int = 1974) -> dict:
+    """Where everything on a reveal board goes: {"subject": item, "items": [item, ...]}.
+
+    The subject's print is in the middle; the others sit round it on one ring (`slots`: each print's
+    place on the ring, 0 at twelve o'clock, clockwise; by default in order), so every string to the
+    middle runs clear of the other prints. Prints in the top part of the ring carry their tag above
+    them, the rest below. A print of any shape keeps a portrait's area (times its `scales` entry). If
+    two footprints overlap, or one leaves the board, everything round the ring shrinks a little.
+    """
+    bw, bh = board
+    count = len(aspects)
+    slots = list(range(count)) if slots is None else list(slots)
+    scales = [1.0] * count if scales is None else list(scales)
+    if len(set(slots)) != count or len(labels) != count or len(scales) != count:
+        raise ValueError("every print needs its own slot, label and scale")
+    ring = ring_slots(max(slots) + 1, board)
+    rng = random.Random(seed)
+    tilts = [rng.choice((-1, 1)) * rng.uniform(*BOARD_TILT) for _ in aspects]
+    tag_tilts = [rng.uniform(-1.4, 1.4) for _ in aspects]
+    tag_h = round(bh * REVEAL_TAG_SCALE)
+    tags = [_label_box(label, sub, tag_h) for label, sub in labels]
+    centre = (bw / 2, bh * 0.485)
+
+    sh = bh * REVEAL_SUBJECT_H
+    sw = sh * subject_aspect
+    boxes = [_label_box(label, sub, bh) for label, sub in subject_labels]   # the subject's tag is full size
+    stw, sth = max(b[0] for b in boxes), max(b[1] for b in boxes)
+    s_ext = _rotated_extent(sw, sh, -1.0)
+    subject = {"cx": centre[0], "cy": centre[1], "w": sw, "h": sh, "angle": -1.0, "ext_w": s_ext[0],
+               "ext_h": s_ext[1], "label_cx": centre[0], "label_cy": centre[1] + s_ext[1] / 2 + bh * REVEAL_TAG_GAP + sth / 2,
+               "label_w": stw, "label_h": sth, "label_angle": 0.6}
+    r = pin_radius(bh)
+    px, py = rotate_point(0, -sh / 2 + r * 1.25, subject["angle"])
+    subject["pin"] = (centre[0] + px, centre[1] + py)
+
+    margin_x, margin_y = bw * REVEAL_MARGIN, bh * REVEAL_MARGIN
+    scale = 1.0
+    for _attempt in range(40):
+        items = []
+        for aspect, slot, s, tilt, tag_tilt, (tw, th) in zip(aspects, slots, scales, tilts, tag_tilts, tags):
+            h = bh * REVEAL_PRINT_H * math.sqrt(REVEAL_PRINT_ASPECT / aspect) * s * scale
+            w = h * aspect
+            ext_w, ext_h = _rotated_extent(w, h, tilt)
+            fx, fy = ring[slot]
+            cx, cy = bw * fx, bh * fy
+            above = fy < 0.5 - REVEAL_RING[1] * 0.45
+            gap = bh * REVEAL_TAG_GAP
+            label_cy = cy - ext_h / 2 - gap - th / 2 if above else cy + ext_h / 2 + gap + th / 2
+            items.append({"cx": cx, "cy": cy, "w": w, "h": h, "angle": tilt, "ext_w": ext_w, "ext_h": ext_h,
+                          "label_cx": cx, "label_cy": label_cy, "label_w": tw, "label_h": th,
+                          "label_angle": tag_tilt, "slot": slot, "tag_above": above})
+        prints = [_reveal_footprint(item) for item in items] + [_reveal_footprint(subject)]
+        inside = all(p[0] >= margin_x and p[1] >= margin_y and p[2] <= bw - margin_x and p[3] <= bh - margin_y
+                     for p in prints)
+        apart = all(overlap_fraction(a, b) <= 0.0 for i, a in enumerate(prints) for b in prints[i + 1:])
+        if inside and apart:
+            break
+        scale *= 0.96
+    for item in items:
+        item["pin"] = _anchor(item, centre)
+    return {"subject": subject, "items": items}
+
+
+def _reveal_footprint(item: dict) -> tuple[float, float, float, float]:
+    """A print and its tag, wherever the tag sits."""
+    px, py, pw, ph = item["cx"], item["cy"], item["ext_w"], item["ext_h"]
+    lx, ly, lw, lh = item["label_cx"], item["label_cy"], item["label_w"], item["label_h"]
+    return (min(px - pw / 2, lx - lw / 2), min(py - ph / 2, ly - lh / 2),
+            max(px + pw / 2, lx + lw / 2), max(py + ph / 2, ly + lh / 2))
+
+
+def close_view(item: dict, board: tuple[int, int], full: float = 1.0) -> tuple[float, float, float]:
+    """The camera (cx, cy, zoom) that holds one print and its tag at REVEAL_CLOSE of the frame height,
+    nudged a touch towards the board's middle. `full` is the zoom that shows the whole layout."""
+    bw, bh = board
+    x0, y0, x1, y1 = _reveal_footprint(item)
+    zoom = clamp(min(bh * REVEAL_CLOSE / (y1 - y0), bw * 0.62 / (x1 - x0)), full, REVEAL_CLOSE_MAX * full)
+    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+    return cx + (bw / 2 - cx) * 0.05, cy + (bh / 2 - cy) * 0.05, zoom
+
+
+def reveal_keyframes(layout: dict, times: list[float], board: tuple[int, int], seconds: float, *,
+                     zoom_out_at: float, strings_at: float, reveal_at: float,
+                     full: float = 1.0) -> list[tuple[float, float, float, float]]:
+    """Camera keyframes (t, cx, cy, zoom) for a reveal board.
+
+    A print that lands a second or more apart from the ones either side of it gets a close-up: the
+    camera travels to it as it lands and holds, drifting in. A run of prints that follow each other
+    quickly lands while the camera pulls back round the ring. From `zoom_out_at` the camera opens to the whole board and
+    holds while the strings draw; from the reveal it pushes in on the subject. `full` is the zoom
+    that shows the whole layout (more than 1 when the board has bare margins round it).
+    """
+    bw, bh = board
+    items = layout["items"]
+    order = sorted(range(len(items)), key=lambda i: times[i])
+    mid = (bw / 2, bh / 2)
+    keys = []
+    gaps = [times[order[k + 1]] - times[i] for k, i in enumerate(order[:-1])] + [math.inf]
+    sweep = [i for k, i in enumerate(order) if k and (times[i] - times[order[k - 1]] < 1.0 or gaps[k] < 1.0)]
+    for k, i in enumerate(order):
+        t = times[i]
+        if i in sweep:
+            p = sweep.index(i) / max(1, len(sweep) - 1)
+            zoom = (REVEAL_SWEEP_ZOOM[0] + (REVEAL_SWEEP_ZOOM[1] - REVEAL_SWEEP_ZOOM[0]) * p) * full
+            keys.append((t + 0.15, mid[0] + (items[i]["cx"] - mid[0]) * 0.40,
+                         mid[1] + (items[i]["cy"] - mid[1]) * 0.40, zoom))
+            continue
+        cx, cy, zoom = close_view(items[i], board, full)
+        if not keys:
+            keys.append((0.0, cx, cy, zoom * 0.96))
+        keys.append((t + 0.20, cx, cy, zoom))
+        nxt = times[order[k + 1]] if k + 1 < len(order) else zoom_out_at
+        leave = max(t + 0.25, nxt - min(0.9, 0.55 * (nxt - t)))
+        keys.append((leave, cx, cy, zoom * (1 + 0.015 * (leave - t))))
+    keys.append((max(zoom_out_at + 0.8, keys[-1][0] + 0.3), mid[0], mid[1], full))
+    keys.append((max(reveal_at + 0.15, keys[-1][0]), mid[0], mid[1], full))
+    subject = layout["subject"]
+    focus = (subject["cx"], (subject["cy"] - subject["ext_h"] / 2 + subject["label_cy"] + subject["label_h"] / 2) / 2)
+    keys.append((max(seconds, keys[-1][0] + 0.01), focus[0], focus[1], REVEAL_PUSH * full))
+    return keys
+
+
+def camera_path(keys, frames: int, fps: int = FPS, smooth_s: float = CAMERA_SMOOTH_S) -> list[tuple[float, float, float]]:
+    """The camera at every frame: straight runs between keyframes (zoom in log space), softened by a
+    Gaussian of `smooth_s`, so it eases into and out of every hold and never jerks."""
+    def at(t):
+        if t <= keys[0][0]:
+            return keys[0][1], keys[0][2], math.log(keys[0][3])
+        for (t0, x0, y0, z0), (t1, x1, y1, z1) in zip(keys, keys[1:]):
+            if t <= t1:
+                u = 0.0 if t1 <= t0 else (t - t0) / (t1 - t0)
+                return x0 + (x1 - x0) * u, y0 + (y1 - y0) * u, math.log(z0) + (math.log(z1) - math.log(z0)) * u
+        return keys[-1][1], keys[-1][2], math.log(keys[-1][3])
+
+    raw = [at(n / fps) for n in range(frames)]
+    sigma = max(1e-6, smooth_s * fps)
+    reach = int(sigma * 3)
+    weights = [math.exp(-0.5 * (d / sigma) ** 2) for d in range(-reach, reach + 1)]
+    total = sum(weights)
+    out = []
+    for n in range(frames):
+        acc = [0.0, 0.0, 0.0]
+        for d, w in zip(range(-reach, reach + 1), weights):
+            sample = raw[min(frames - 1, max(0, n + d))]
+            for axis in range(3):
+                acc[axis] += sample[axis] * w
+        out.append((acc[0] / total, acc[1] / total, math.exp(acc[2] / total)))
+    return out
+
+
+def unknown_picture(w: int, h: int) -> Image.Image:
+    """The unknown suspect: a grey head-and-shoulders silhouette on charcoal under a large question mark."""
+    picture = Image.new("RGB", (w, h), (24, 24, 24))
+    glow = Image.new("L", (w, h), 0)
+    ImageDraw.Draw(glow).ellipse((-w * 0.2, h * 0.05, w * 1.2, h * 0.85), fill=26)
+    picture.paste((48, 48, 48), (0, 0), glow.filter(ImageFilter.GaussianBlur(w * 0.18)))
+    shape = Image.new("L", (w, h), 0)
+    draw = ImageDraw.Draw(shape)
+    draw.ellipse((w * 0.31, h * 0.17, w * 0.69, h * 0.55), fill=255)            # head
+    draw.rectangle((w * 0.42, h * 0.48, w * 0.58, h * 0.66), fill=255)           # neck
+    draw.ellipse((w * 0.06, h * 0.62, w * 0.94, h * 1.30), fill=255)             # shoulders
+    picture.paste((58, 58, 58), (0, 0), shape.filter(ImageFilter.GaussianBlur(w * 0.006)))
+    fnt = graphics.font(graphics.SANS_BOLD, round(h * 0.30))
+    box = fnt.getbbox("?")
+    x = (w - (box[2] - box[0])) / 2 - box[0]
+    y = h * 0.36 - (box[3] - box[1]) / 2 - box[1]
+    ImageDraw.Draw(picture).text((x, y), "?", font=fnt, fill=FOREGROUND)
+    return picture
+
+
+def _sprite(image: Image.Image, angle: float, board_h: int, *, blur: float, offset, opacity: float):
+    """A print turned to its angle, with its shadow: (RGBA print, L shadow mask, shadow pad, offset)."""
+    turned = image.convert("RGBA").rotate(angle, resample=Image.Resampling.BICUBIC, expand=True)
+    pad = round(blur * 3)
+    mask = Image.new("L", (turned.width + 2 * pad, turned.height + 2 * pad), 0)
+    mask.paste(turned.getchannel("A").point(lambda a: a * opacity), (pad, pad))
+    return {"rgba": turned, "shadow": mask.filter(ImageFilter.GaussianBlur(blur)), "pad": pad, "offset": offset}
+
+
+def _draw_sprite(frame: Image.Image, origin, sprite: dict, centre, *, scale: float = 1.0, alpha: float = 1.0,
+                 lift: float = 0.0, rgba: Image.Image | None = None) -> None:
+    """Lay a sprite on a frame cut from the board at `origin`: centred at `centre`, `scale`d, faded to
+    `alpha`, its shadow thrown further the higher it is `lift`ed off the board (0 lies flat)."""
+    if alpha <= 0:
+        return
+    image = rgba or sprite["rgba"]
+    shadow = sprite["shadow"]
+    if abs(scale - 1) > 1e-3:
+        image = image.resize((max(1, round(image.width * scale)), max(1, round(image.height * scale))),
+                             Image.Resampling.BICUBIC)
+        shadow = shadow.resize((max(1, round(shadow.width * scale)), max(1, round(shadow.height * scale))),
+                               Image.Resampling.BILINEAR)
+    if alpha < 1:
+        image = image.copy()
+        image.putalpha(image.getchannel("A").point(lambda a: round(a * alpha)))
+    shadow = shadow.point(lambda a: round(a * alpha * (1 - 0.45 * lift)))
+    ox, oy = sprite["offset"]
+    sx = centre[0] - shadow.width / 2 + ox * (1 + 5 * lift) - origin[0]
+    sy = centre[1] - shadow.height / 2 + oy * (1 + 5 * lift) - origin[1]
+    frame.paste((0, 0, 0), (round(sx), round(sy)), shadow)
+    frame.paste(image, (round(centre[0] - image.width / 2 - origin[0]), round(centre[1] - image.height / 2 - origin[1])),
+                image)
+
+
+def string_starts(count: int, start: float, end: float, draw_s: float = REVEAL_STRING_S) -> list[tuple[float, float]]:
+    """When each string to the middle draws: staggered so the last one finishes at `end`."""
+    if count == 0:
+        return []
+    draw_s = min(draw_s, end - start)
+    step = 0.0 if count == 1 else (end - start - draw_s) / (count - 1)
+    return [(start + k * step, start + k * step + draw_s) for k in range(count)]
+
+
+def reveal_board(pins: list[dict], subject: dict, out_path, seconds: float, *, reveal_at: float,
+                 zoom_out_at: float, strings_at: float | None = None, width: int = 1920, height: int = 1080,
+                 fps: int = FPS, seed: int = 1974) -> Path:
+    """An evidence board that builds up round an unknown suspect, then names him.
+
+    `pins`: [{"image": path, "label": "Melissa Smith", "sub": "17, Midvale, Utah, 1974", "at": 0.2,
+    "slot": 11, "crop": [x0, y0, x1, y1], "scale": 1.1}], each print dropping onto the board at its
+    `at` seconds (the camera follows the slow ones close up). `subject`: {"image": path, "label":
+    "Ted Bundy", "sub": "1946 - 1989", "unknown": "Unidentified"}. From `zoom_out_at` the camera opens
+    to the whole board; from `strings_at` a red string runs from every print's pin to the unknown
+    print in the middle; at `reveal_at` it flares white and the subject's photograph comes up in its
+    place, his name typed in red on its tag. Encoded as an mp4 of `seconds`.
+    """
+    if not pins:
+        raise ValueError("a reveal board needs prints round its subject")
+    if not 0 < zoom_out_at < reveal_at < seconds:
+        raise ValueError("the board opens out, then reveals, inside the clip")
+    strings_at = zoom_out_at + 0.8 if strings_at is None else strings_at
+    inner = (width * REVEAL_SUPERSAMPLE, height * REVEAL_SUPERSAMPLE)
+    pad_x, pad_y = round(inner[0] * REVEAL_PAD), round(inner[1] * REVEAL_PAD)
+    board = (inner[0] + 2 * pad_x, inner[1] + 2 * pad_y)
+    bw, bh = board
+    full = bw / inner[0]
+
+    def aspect_of(pin):
+        with Image.open(pin["image"]) as image:
+            w, h = image.size
+        x0, y0, x1, y1 = pin.get("crop") or (0, 0, 1, 1)
+        return w * (x1 - x0) / (h * (y1 - y0))
+
+    with Image.open(subject["image"]) as image:
+        subject_aspect = image.width / image.height
+    unknown_label = (subject.get("unknown") or "Unidentified", None)
+    named_label = (subject.get("label") or "", subject.get("sub"))
+    layout = reveal_layout([aspect_of(p) for p in pins], [(p.get("label", ""), p.get("sub")) for p in pins], inner,
+                           subject_aspect=subject_aspect, subject_labels=[unknown_label, named_label],
+                           slots=[p["slot"] for p in pins] if all("slot" in p for p in pins) else None,
+                           scales=[p.get("scale", 1.0) for p in pins], seed=seed)
+    items, hub = layout["items"], layout["subject"]
+    for item in items + [hub]:          # onto the padded board
+        for x, y in (("cx", "cy"), ("label_cx", "label_cy")):
+            item[x] += pad_x
+            item[y] += pad_y
+        item["pin"] = (item["pin"][0] + pad_x, item["pin"][1] + pad_y)
+    times = [float(p["at"]) for p in pins]
+    bh = inner[1]                       # sizes follow the layout, not the margins
+
+    canvas = _board_ground(board)
+    shade = dict(blur=bh * 0.010, offset=(bh * 0.004, bh * 0.010), opacity=0.85)
+    tag_shade = dict(blur=bh * 0.005, offset=(bh * 0.002, bh * 0.005), opacity=0.7)
+    prints = [_sprite(_print_image(p["image"], round(i["w"]), round(i["h"]), p.get("crop")), i["angle"], bh, **shade)
+              for p, i in zip(pins, items)]
+    tag_h = round(bh * REVEAL_TAG_SCALE)
+    tags = [_sprite(_label_tag(p.get("label", ""), p.get("sub"), (i["label_w"], i["label_h"]), tag_h), i["label_angle"],
+                    bh, **tag_shade) for p, i in zip(pins, items)]
+    sw, shh = round(hub["w"]), round(hub["h"])
+    unknown = _sprite(_as_print(unknown_picture(sw, shh), sw, shh), hub["angle"], bh, **shade)
+    named = _sprite(_print_image(subject["image"], sw, shh), hub["angle"], bh, **shade)
+    white = named["rgba"].copy()
+    white.paste(FLASH + (255,), (0, 0), named["rgba"].getchannel("A"))
+    tag_size = (hub["label_w"], hub["label_h"])
+    unknown_tag = _sprite(_label_tag(unknown_label[0], None, tag_size, bh), hub["label_angle"], bh, **tag_shade)
+    named_tag = _sprite(_label_tag(named_label[0], named_label[1], tag_size, bh, ink=ACCENT), hub["label_angle"],
+                        bh, **tag_shade)
+
+    ring_order = sorted(range(len(items)), key=lambda i: items[i]["slot"])
+    strings = {i: _string_patch(items[i]["pin"], (hub["cx"], hub["cy"]), bh) for i in ring_order}
+    draws = dict(zip(ring_order, string_starts(len(items), strings_at, reveal_at - 0.2)))
+    pin = _pin_patch(pin_radius(bh))
+
+    total = frame_count(seconds, fps)
+    path = camera_path(reveal_keyframes(layout, times, board, seconds, zoom_out_at=zoom_out_at,
+                                        strings_at=strings_at, reveal_at=reveal_at, full=full), total, fps)
+    landed, tagged, strung = set(), set(), set()
+    with FrameWriter(out_path, width, height, fps, frames=total) as out:
+        for n in range(total):
+            t = n / fps
+            # whatever has settled is baked into the board, so a frame only draws what is moving
+            for i in range(len(items)):
+                if i not in landed and t >= times[i] + REVEAL_LAND_S:
+                    _draw_sprite(canvas, (0, 0), prints[i], (items[i]["cx"], items[i]["cy"]))
+                    landed.add(i)
+                if i not in tagged and t >= times[i] + 0.25 + REVEAL_TAG_S:
+                    _draw_sprite(canvas, (0, 0), tags[i], (items[i]["label_cx"], items[i]["label_cy"]))
+                    tagged.add(i)
+                if i not in strung and t >= draws[i][1]:
+                    patch, origin, _, _ = strings[i]
+                    canvas.paste(patch, origin, patch)
+                    strung.add(i)
+            cx, cy, zoom = path[n]
+            box = view_box(cx, cy, zoom, board)
+            left, top = max(0, math.floor(box[0]) - 2), max(0, math.floor(box[1]) - 2)
+            right, bottom = min(bw, math.ceil(box[2]) + 2), min(board[1], math.ceil(box[3]) + 2)
+            frame = canvas.crop((left, top, right, bottom))
+            origin = (left, top)
+            for i in range(len(items)):
+                if times[i] <= t and i not in landed:
+                    p = progress(t, times[i], times[i] + REVEAL_LAND_S)
+                    _draw_sprite(frame, origin, prints[i], (items[i]["cx"], items[i]["cy"]),
+                                 scale=1 + 0.22 * (1 - ease_out_back(p, 0.9)), alpha=clamp(p * 3),
+                                 lift=1 - ease_out_cubic(p))
+                if times[i] + 0.25 <= t and i not in tagged:
+                    q = ease_out_cubic(progress(t, times[i] + 0.25, times[i] + 0.25 + REVEAL_TAG_S))
+                    drop = bh * 0.012 * (1 - q) * (1 if items[i]["tag_above"] else -1)
+                    _draw_sprite(frame, origin, tags[i], (items[i]["label_cx"], items[i]["label_cy"] - drop),
+                                 alpha=q, lift=0.3 * (1 - q))
+                if draws[i][0] < t and i not in strung:
+                    patch, at, a, b = strings[i]
+                    part = _partial(patch, a, b, ease_in_out_sine(progress(t, *draws[i])))
+                    frame.paste(part, (at[0] - left, at[1] - top), part)
+            # the middle print: unknown, a white flare, then the subject's photograph developing out of it
+            f = t - reveal_at
+            pop = 1 + 0.035 * math.sin(math.pi * clamp(f / (REVEAL_FLASH_S + REVEAL_DEVELOP_S))) if f > 0 else 1.0
+            if f < 0:
+                face = unknown["rgba"]
+            elif f < REVEAL_FLASH_S:
+                face = Image.blend(unknown["rgba"], white, 0.92 * ease_out_cubic(f / REVEAL_FLASH_S))
+            elif f < REVEAL_FLASH_S + REVEAL_DEVELOP_S:
+                face = Image.blend(white, named["rgba"], 0.08 + 0.92 * ease_in_out_sine((f - REVEAL_FLASH_S) / REVEAL_DEVELOP_S))
+            else:
+                face = named["rgba"]
+            _draw_sprite(frame, origin, named, (hub["cx"], hub["cy"]), scale=pop, rgba=face)
+            swap = clamp((f - REVEAL_FLASH_S * 0.5) / 0.3) if f > 0 else 0.0
+            if swap < 1:
+                _draw_sprite(frame, origin, unknown_tag, (hub["label_cx"], hub["label_cy"]), alpha=1 - swap)
+            if swap > 0:
+                _draw_sprite(frame, origin, named_tag, (hub["label_cx"], hub["label_cy"]), alpha=swap)
+            # pins last: over the prints and the strings
+            centre_pin = (hub["cx"] + (hub["pin"][0] - hub["cx"]) * pop - pin.width / 2 - left,
+                          hub["cy"] + (hub["pin"][1] - hub["cy"]) * pop - pin.height / 2 - top)
+            for i in range(len(items)):
+                r = progress(t, times[i] + REVEAL_LAND_S - REVEAL_PIN_S, times[i] + REVEAL_LAND_S)
+                if t < times[i] + REVEAL_LAND_S - REVEAL_PIN_S:
+                    continue
+                s = max(0.05, ease_out_back(r, 1.6))
+                patch = pin if r >= 1 else pin.resize((max(1, round(pin.width * s)), max(1, round(pin.height * s))),
+                                                      Image.Resampling.BICUBIC)
+                frame.paste(patch, (round(items[i]["pin"][0] - patch.width / 2 - left),
+                                    round(items[i]["pin"][1] - patch.height / 2 - top)), patch)
+            frame.paste(pin, (round(centre_pin[0]), round(centre_pin[1])), pin)
+            out.write(frame.resize((width, height), Image.Resampling.BICUBIC,
+                                   box=(box[0] - left, box[1] - top, box[2] - left, box[3] - top)))
+    return Path(out_path)
+
+
+def _finished_board(pins: list[dict], subject: dict, width: int, height: int, seed: int):
+    """The reveal board as it stands after the reveal: every print, tag and string in place and the subject
+    named. Returns (canvas, items, hub, inner size), positions on the padded board."""
+    inner = (width * REVEAL_SUPERSAMPLE, height * REVEAL_SUPERSAMPLE)
+    pad_x, pad_y = round(inner[0] * REVEAL_PAD), round(inner[1] * REVEAL_PAD)
+    board = (inner[0] + 2 * pad_x, inner[1] + 2 * pad_y)
+
+    def aspect_of(pin):
+        with Image.open(pin["image"]) as image:
+            w, h = image.size
+        x0, y0, x1, y1 = pin.get("crop") or (0, 0, 1, 1)
+        return w * (x1 - x0) / (h * (y1 - y0))
+
+    with Image.open(subject["image"]) as image:
+        subject_aspect = image.width / image.height
+    unknown_label = (subject.get("unknown") or "Unidentified", None)
+    named_label = (subject.get("label") or "", subject.get("sub"))
+    layout = reveal_layout([aspect_of(p) for p in pins], [(p.get("label", ""), p.get("sub")) for p in pins], inner,
+                           subject_aspect=subject_aspect, subject_labels=[unknown_label, named_label],
+                           slots=[p["slot"] for p in pins] if all("slot" in p for p in pins) else None,
+                           scales=[p.get("scale", 1.0) for p in pins], seed=seed)
+    items, hub = layout["items"], layout["subject"]
+    for item in items + [hub]:
+        for x, y in (("cx", "cy"), ("label_cx", "label_cy")):
+            item[x] += pad_x
+            item[y] += pad_y
+        item["pin"] = (item["pin"][0] + pad_x, item["pin"][1] + pad_y)
+    bh = inner[1]
+    canvas = _board_ground(board)
+    shade = dict(blur=bh * 0.010, offset=(bh * 0.004, bh * 0.010), opacity=0.85)
+    tag_shade = dict(blur=bh * 0.005, offset=(bh * 0.002, bh * 0.005), opacity=0.7)
+    tag_h = round(bh * REVEAL_TAG_SCALE)
+    for p, i in zip(pins, items):
+        _draw_sprite(canvas, (0, 0), _sprite(_print_image(p["image"], round(i["w"]), round(i["h"]), p.get("crop")),
+                                             i["angle"], bh, **shade), (i["cx"], i["cy"]))
+        _draw_sprite(canvas, (0, 0), _sprite(_label_tag(p.get("label", ""), p.get("sub"), (i["label_w"], i["label_h"]),
+                                                        tag_h), i["label_angle"], bh, **tag_shade),
+                     (i["label_cx"], i["label_cy"]))
+    for i in items:
+        patch, origin, _, _ = _string_patch(i["pin"], (hub["cx"], hub["cy"]), bh)
+        canvas.paste(patch, origin, patch)
+    sw, shh = round(hub["w"]), round(hub["h"])
+    _draw_sprite(canvas, (0, 0), _sprite(_print_image(subject["image"], sw, shh), hub["angle"], bh, **shade),
+                 (hub["cx"], hub["cy"]))
+    _draw_sprite(canvas, (0, 0), _sprite(_label_tag(named_label[0], named_label[1], (hub["label_w"], hub["label_h"]), bh,
+                                                    ink=ACCENT), hub["label_angle"], bh, **tag_shade),
+                 (hub["label_cx"], hub["label_cy"]))
+    pin = _pin_patch(pin_radius(bh))
+    for i in items + [hub]:
+        canvas.paste(pin, (round(i["pin"][0] - pin.width / 2), round(i["pin"][1] - pin.height / 2)), pin)
+    return canvas, items, hub, inner
+
+
+def board_callback(pins: list[dict], subject: dict, out_path, seconds: float, path: list, highlights: list, *,
+                   width: int = 1920, height: int = 1080, fps: int = FPS, seed: int = 1974) -> Path:
+    """Back to the finished reveal board (the same pins and subject as the opening): the camera travels the
+    board and lights up one victim at a time, her print ringed, her string to the subject glowing, the rest
+    of the board in shadow.
+
+    `path`: [[t, target, zoom], ...], a target being a pin's label, the subject's label or "all".
+    `highlights`: [{"label": "Roberta Parks", "from": 6.8, "to": 11.3}, ...].
+    """
+    canvas, items, hub, inner = _finished_board(pins, subject, width, height, seed)
+    bw, bh = canvas.size
+    by_label = {p.get("label", "").lower(): i for p, i in zip(pins, items)}
+    by_label[(subject.get("label") or "").lower()] = hub
+
+    def target(name):
+        if name == "all":
+            return bw / 2, bh / 2
+        item = by_label[name.lower()]
+        x0, y0, x1, y1 = _reveal_footprint(item)
+        return (x0 + x1) / 2, (y0 + y1) / 2
+    full = bw / inner[0]
+    keys = [(t, *target(name), zoom * full) for t, name, zoom in path]
+    total = frame_count(seconds, fps)
+    cam = camera_path(keys, total, fps, 0.5)
+    unit = inner[1] / 56.0
+    with FrameWriter(out_path, width, height, fps, frames=total) as out:
+        for n in range(total):
+            t = n / fps
+            cx, cy, zoom = cam[n]
+            box = view_box(cx, cy, zoom, (bw, bh))
+            left, top = max(0, math.floor(box[0]) - 2), max(0, math.floor(box[1]) - 2)
+            right, bottom = min(bw, math.ceil(box[2]) + 2), min(bh, math.ceil(box[3]) + 2)
+            frame = canvas.crop((left, top, right, bottom))
+            for h in highlights:
+                a = min(clamp((t - h["from"]) / 0.6), clamp((h["to"] - t) / 0.6))
+                if a <= 0:
+                    continue
+                item = by_label[h["label"].lower()]
+                x0, y0, x1, y1 = _reveal_footprint(item)
+                # the rest of the board falls into shadow round a soft spotlight on her print and string
+                mask = Image.new("L", frame.size, round(150 * a))
+                md = ImageDraw.Draw(mask)
+                grow = unit * 1.6
+                md.rounded_rectangle((x0 - grow - left, y0 - grow - top, x1 + grow - left, y1 + grow - top),
+                                     radius=unit * 1.5, fill=0)
+                md.line([(item["pin"][0] - left, item["pin"][1] - top), (hub["cx"] - left, hub["cy"] - top)],
+                        fill=0, width=round(unit * 2.4))
+                hx0, hy0, hx1, hy1 = _reveal_footprint(hub)
+                md.rounded_rectangle((hx0 - grow - left, hy0 - grow - top, hx1 + grow - left, hy1 + grow - top),
+                                     radius=unit * 1.5, fill=0)
+                mask = mask.filter(ImageFilter.GaussianBlur(unit * 1.2))
+                frame.paste((0, 0, 0), (0, 0), mask)
+                d = ImageDraw.Draw(frame, "RGBA")
+                glow = 0.65 + 0.35 * math.sin(t * 5.0)
+                width_px = max(3, round(unit * 0.32))
+                # the string glows from her pin to the edge of his print, never across his face
+                px, py = item["pin"]
+                ex, ey = hub["cx"] - px, hub["cy"] - py
+                hw, hh = hub["ext_w"] / 2, hub["ext_h"] / 2
+                k = 1 - min(hw / abs(ex) if ex else math.inf, hh / abs(ey) if ey else math.inf)
+                d.line([(px - left, py - top), (px + ex * k - left, py + ey * k - top)],
+                       fill=STRING_CORE + (round(255 * a * glow),), width=width_px)
+                d.rounded_rectangle((x0 - unit * 0.6 - left, y0 - unit * 0.6 - top, x1 + unit * 0.6 - left,
+                                     y1 + unit * 0.6 - top), radius=unit * 0.6,
+                                    outline=STRING_CORE + (round(255 * a),), width=width_px)
+            out.write(frame.resize((width, height), Image.Resampling.BICUBIC,
+                                   box=(box[0] - left, box[1] - top, box[2] - left, box[3] - top)))
     return Path(out_path)
 
 

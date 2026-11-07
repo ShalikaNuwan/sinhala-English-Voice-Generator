@@ -5,3 +5,19 @@ __pycache__/
 *.py[cod]
 data/
 
+# Mac and build leftovers
+.DS_Store
+*.egg-info/
+
+# Media and render output never belongs in Git
+*.wav
+*.mp3
+*.mp4
+*.mov
+*.part.mp4
+*.log
+
+# One-off scripts and backups
+*.before_*
+scratch/
+scratchpad/

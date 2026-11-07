@@ -106,6 +106,35 @@ def test_the_illustration_tag_is_drawn_inside_the_frame(tmp_path):
     assert img.crop((int(1536 * 0.75), int(1024 * 0.88), int(1536 * 0.93), int(1024 * 0.95))).getextrema()[0][1] > 100
 
 
+def test_a_film_whose_case_turns_the_tag_off_uses_its_illustrations_untagged(tmp_path, monkeypatch):
+    import sources
+    monkeypatch.setattr(sources, "generate_image", lambda prompt, out: (out.parent.mkdir(parents=True, exist_ok=True),
+                                                                         Image.new("RGB", (64, 64)).save(out)))
+    assert ladder.generate_detail("a desk lamp", "1970s", tmp_path).parent.name == "generated"
+    (tmp_path / "case.json").write_text('{"illustration_tag": false}', encoding="utf-8")
+    assert ladder.generate_detail("a desk lamp", "1970s", tmp_path).parent.name == "untagged"
+
+
+def test_a_story_time_that_is_not_a_period_never_reads_as_a_person_to_the_likeness_guard(tmp_path, monkeypatch):
+    import sources
+    prompts = []
+
+    def draw(prompt, out):
+        if sources.names_a_real_person(prompt):
+            raise ValueError("likeness")
+        prompts.append(prompt)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (64, 64)).save(out)
+
+    monkeypatch.setattr(sources, "generate_image", draw)
+    ladder.generate_detail("a 1920s study with an empty wooden desk", "After Ted’s imprisonment; retrospective discussion",
+                           tmp_path)
+    ladder.generate_detail("a desk lamp", "1974, Salt Lake City", tmp_path)
+    assert "Ted" not in prompts[0] and "1970s" not in prompts[0]
+    assert "Documentary photograph, 1974, a quiet" in prompts[1]
+    assert ladder.drawing_prompt("a desk lamp", "1970s").startswith("Documentary photograph, 1970s, a quiet")  # as before
+
+
 def test_a_detail_at_the_edge_is_framed_inside_the_picture():
     assert ladder.frame_box((0.95, 0.0, 1.0, 0.1)) == [0.72, 0.0, 1.0, 0.28]
 
@@ -308,3 +337,12 @@ def test_a_near_duplicate_of_the_picture_before_runs_on_as_one_shot(tmp_path):
     ladder.illustrate_holds(entries, tmp_path, {"people": [], "places": []}, {1: {"id": 1}},
                             describe=lambda w, s: "x", generate=fake_generate([]), library=library)
     assert [(e["start"], e["end"], e["library_id"]) for e in entries] == [(0, 9, "a"), (9, 14, "c")]
+
+
+def test_ordinary_words_inside_names_do_not_block_a_drawing():
+    bible = {"people": [{"name": "Ray Crew"}, {"name": "Jim Bell"}], "places": [{"name": "Taylor Mountain"}]}
+    assert ladder.safe_detail("a dental X-ray viewer on a 1970s desk", bible)
+    assert ladder.safe_detail("a wind-up alarm clock with twin bells on a bedside table", bible)
+    assert ladder.safe_detail("a forested mountain road at dusk", bible)
+    assert not ladder.safe_detail("a hat on Ray Crew's desk", bible)
+    assert not ladder.safe_detail("a trail up Taylor Mountain", bible)

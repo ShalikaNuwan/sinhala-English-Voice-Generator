@@ -289,3 +289,151 @@ def test_job_configuration_carries_the_pause_source():
     assert job_configuration(
         ProcessRequest(pause_source="diarizer"), Settings(openai_api_key="unused"),
     )["pause_source"] == "diarizer"
+
+
+def load_app(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    import app.config
+    import app.main
+
+    importlib.reload(app.config)
+    module = importlib.reload(app.main)
+    from fastapi.testclient import TestClient
+
+    return module, TestClient(module.app)
+
+
+def test_segments_carry_the_sentence_fix_and_facts_with_a_stale_flag(tmp_path, monkeypatch):
+    import json
+
+    module, client = load_app(tmp_path, monkeypatch)
+    job_id, (fresh_id, stale_id, unchecked_id) = seed_job_with_segments(module, ["narration", "narration", "narration"])
+    module.db.execute("UPDATE segments SET narration_en='He slept.'", ())
+    facts = {"state": "done", "checked_text": "He slept.", "items": []}
+    module.db.execute("UPDATE segments SET facts_json=?, sentence_fix_json=? WHERE id=?",
+                      (json.dumps(facts), json.dumps({"notes": ["End of sentence moved in from segment 2 (narration)"]}), fresh_id))
+    module.db.execute("UPDATE segments SET facts_json=? WHERE id=?", (json.dumps(facts | {"checked_text": "He woke."}), stale_id))
+    # A row from before the columns existed reads back as null.
+    module.db.execute("UPDATE segments SET facts_json='null', sentence_fix_json='null' WHERE id=?", (unchecked_id,))
+
+    fresh, stale, unchecked = client.get(f"/api/jobs/{job_id}/segments").json()
+
+    assert fresh["facts_stale"] is False and fresh["sentence_fix"]["notes"] == ["End of sentence moved in from segment 2 (narration)"]
+    assert stale["facts_stale"] is True
+    assert unchecked["facts"] == {} and unchecked["sentence_fix"] == {} and unchecked["facts_stale"] is False
+
+
+def test_the_outline_lists_every_segment_briefly_and_finds_words(tmp_path, monkeypatch):
+    import json
+
+    module, client = load_app(tmp_path, monkeypatch)
+    job_id, (first, second) = seed_job_with_segments(module, ["narration", "narration"])
+    module.db.execute("UPDATE segments SET narration_en='He drove to Utah in the night.' WHERE id=?", (first,))
+    module.db.execute("UPDATE segments SET narration_en='The trial began.', transcript_si='නඩුව' WHERE id=?", (second,))
+    items = [{"claim": "He drove.", "verdict": "wrong", "evidence": "long evidence", "sources": [{"url": "https://a.example", "title": "A"}],
+              "resolved": True}, {"claim": "It was night.", "verdict": "correct", "evidence": "", "sources": []}]
+    module.db.execute("UPDATE segments SET facts_json=? WHERE id=?",
+                      (json.dumps({"state": "done", "at": "t", "checked_text": "He drove to Utah in the night.", "items": items}), first))
+
+    outline = client.get(f"/api/jobs/{job_id}/segment-outline").json()
+
+    assert [row["id"] for row in outline] == [first, second]
+    assert outline[0]["facts"] == {"state": "done", "at": "t", "items": [{"verdict": "wrong", "resolved": True},
+                                                                       {"verdict": "correct", "resolved": False}]}
+    assert outline[0]["facts_stale"] is False and "narration_en" not in outline[0] and "snippet" not in outline[0]
+
+    found = client.get(f"/api/jobs/{job_id}/segment-outline", params={"q": "  UTAH "}).json()
+    assert [row["id"] for row in found] == [first] and "Utah" in found[0]["snippet"]
+    assert [row["id"] for row in client.get(f"/api/jobs/{job_id}/segment-outline", params={"q": "නඩුව"}).json()] == [second]
+    assert client.get(f"/api/jobs/{job_id}/segment-outline", params={"q": "Seattle"}).json() == []
+    assert client.get("/api/jobs/missing/segment-outline").status_code == 404
+
+    module.db.execute("UPDATE segments SET kind='original' WHERE id=?", (second,))
+    texts = client.get(f"/api/jobs/{job_id}/segment-outline", params={"text": "true"}).json()
+    assert texts[0]["narration_en"] == "He drove to Utah in the night." and "transcript_si" not in texts[0]
+    assert texts[1]["transcript_si"] == "නඩුව" and texts[1]["end_ms"] > texts[1]["start_ms"] >= 0
+
+    one = client.get(f"/api/segments/{first}").json()
+    assert one["narration_en"] == "He drove to Utah in the night." and one["facts"]["items"][0]["evidence"] == "long evidence"
+    assert client.get("/api/segments/missing").status_code == 404
+
+
+def test_a_fact_can_be_marked_resolved_and_back(tmp_path, monkeypatch):
+    import json
+
+    module, client = load_app(tmp_path, monkeypatch)
+    job_id, (segment_id,) = seed_job_with_segments(module, ["narration"])
+    items = [{"claim": "He was 36.", "verdict": "wrong", "evidence": "He was 33.", "sources": []},
+             {"claim": "It was 1978.", "verdict": "correct", "evidence": "", "sources": []}]
+    module.db.execute("UPDATE segments SET narration_en='He was 36.', facts_json=? WHERE id=?",
+                      (json.dumps({"state": "done", "checked_text": "He was 36.", "items": items}), segment_id))
+    url = f"/api/segments/{segment_id}/facts/0/resolved"
+
+    marked = client.put(url, json={"claim": "He was 36."})
+    assert marked.status_code == 200 and marked.json()["facts"]["items"][0]["resolved"] is True
+    assert client.get(f"/api/jobs/{job_id}/segments").json()[0]["facts"]["items"][0]["resolved"] is True
+    assert "resolved" not in client.put(url, json={"claim": "He was 36.", "resolved": False}).json()["facts"]["items"][0]
+    assert client.put(url, json={"claim": "Something else."}).status_code == 409
+    assert client.put(f"/api/segments/{segment_id}/facts/1/resolved", json={"claim": "It was 1978."}).status_code == 400
+    assert client.put("/api/segments/missing/facts/0/resolved", json={"claim": "x"}).status_code == 404
+
+
+def test_the_check_endpoints_start_tasks_and_refuse_a_second_run(tmp_path, monkeypatch):
+    from app.pipeline import TaskBusy
+
+    module, client = load_app(tmp_path, monkeypatch)
+    job_id, (narration_id, original_id) = seed_job_with_segments(module, ["narration", "original"])
+    started = []
+
+    def fake_start(kind):
+        def start(*args):
+            if (kind, *args) in started:
+                raise TaskBusy("already running")
+            started.append((kind, *args))
+        return start
+
+    monkeypatch.setattr(module.pipeline, "start_fix_sentences", fake_start("sentences"))
+    monkeypatch.setattr(module.pipeline, "start_check_facts", fake_start("facts"))
+
+    assert client.post(f"/api/jobs/{job_id}/fix-sentences").status_code == 202
+    assert client.post(f"/api/jobs/{job_id}/fix-sentences").status_code == 409
+    assert client.post(f"/api/jobs/{job_id}/check-facts").status_code == 202
+    assert client.post(f"/api/jobs/{job_id}/check-facts").status_code == 409
+    assert client.post(f"/api/segments/{narration_id}/check-facts").status_code == 202
+    assert started == [("sentences", job_id), ("facts", job_id), ("facts", job_id, narration_id)]
+
+    assert client.post(f"/api/segments/{original_id}/check-facts").status_code == 409
+    assert client.post("/api/jobs/missing/fix-sentences").status_code == 404
+    assert client.post("/api/jobs/missing/check-facts").status_code == 404
+    assert client.post("/api/segments/missing/check-facts").status_code == 404
+
+
+def test_the_checks_wait_for_a_running_job_and_need_a_key(tmp_path, monkeypatch):
+    module, client = load_app(tmp_path, monkeypatch)
+    job_id, (narration_id,) = seed_job_with_segments(module, ["narration"])
+    monkeypatch.setattr(module.pipeline, "start_fix_sentences", lambda *args: None)
+    monkeypatch.setattr(module.pipeline, "start_check_facts", lambda *args: None)
+    module.db.execute("UPDATE jobs SET status='running' WHERE id=?", (job_id,))
+
+    assert client.post(f"/api/jobs/{job_id}/fix-sentences").status_code == 409
+    assert client.post(f"/api/jobs/{job_id}/check-facts").status_code == 409
+    assert client.post(f"/api/segments/{narration_id}/check-facts").status_code == 409
+
+    module.db.execute("UPDATE jobs SET status='awaiting_review' WHERE id=?", (job_id,))
+    monkeypatch.setattr(module.settings, "openai_api_key", None)
+    assert client.post(f"/api/jobs/{job_id}/fix-sentences").status_code == 503
+    assert client.post(f"/api/segments/{narration_id}/check-facts").status_code == 503
+
+
+def test_the_tasks_endpoint_reports_the_tracker(tmp_path, monkeypatch):
+    module, client = load_app(tmp_path, monkeypatch)
+    job_id, _ids = seed_job_with_segments(module, ["narration"])
+
+    assert client.get(f"/api/jobs/{job_id}/tasks").json() == {"sentences": None, "facts": None}
+
+    module.pipeline.tasks[job_id] = {"facts": {"state": "running", "done": 12, "total": 40, "error": ""}}
+    assert client.get(f"/api/jobs/{job_id}/tasks").json() == {
+        "sentences": None, "facts": {"state": "running", "done": 12, "total": 40, "error": ""},
+    }
+    assert client.get("/api/jobs/missing/tasks").status_code == 404

@@ -9,6 +9,7 @@ is 400, except asking for an unknown shot's alternatives, which is 404.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 from typing import Literal
@@ -24,7 +25,7 @@ from .video_regen import RegenBusy, Regenerator
 
 router = APIRouter(prefix="/api/video")
 jobs = Jobs()
-regen = Regenerator()
+regen = Regenerator(workers=int(os.getenv("REGEN_WORKERS", "3")))
 
 
 class MarkIn(BaseModel):
@@ -49,9 +50,9 @@ def video_root() -> Path:
     return config.settings.data_dir / "video"
 
 
-def film_or_404(film: str) -> Path:
+def film_or_404(film: str, preparing: bool = False) -> Path:
     try:
-        return review.film_dir(video_root(), film)
+        return review.film_dir(video_root(), film, preparing)
     except review.FilmError:
         raise HTTPException(404, "Film not found")
 
@@ -75,6 +76,12 @@ def film_view(film: str) -> dict:
     return review.film_view(d) | {"job": jobs.status(d)}
 
 
+@router.get("/films/{film}/gathered")
+def gathered(film: str) -> dict:
+    """The pictures and clips gathered so far, and the preparation's stages (also while it is still running)."""
+    return review.gathered(film_or_404(film, preparing=True))
+
+
 @router.get("/films/{film}/shots/{n}/alternatives")
 def alternatives(film: str, n: int) -> dict:
     d = film_or_404(film)
@@ -96,6 +103,7 @@ def mark(film: str, n: int, payload: MarkIn) -> dict:
 @router.post("/films/{film}/shots/{n}/choose")
 def choose(film: str, n: int, payload: ChoiceIn) -> dict:
     d = film_or_404(film)
+    not_replanning(d)
     try:
         return review.choose(d, n, payload.choice)
     except review.FilmError as exc:
@@ -105,6 +113,18 @@ def choose(film: str, n: int, payload: ChoiceIn) -> dict:
 def job_running(d: Path) -> dict | None:
     job = jobs.status(d)
     return job if job and job["state"] == "running" else None
+
+
+def not_preparing(d: Path) -> None:
+    if review.preparing(d):
+        raise HTTPException(409, "the engine is still preparing this film and will plan its shots again: "
+                                 "change shots when the preparation is done")
+
+
+def not_replanning(d: Path) -> None:
+    if review.replanning(d):
+        raise HTTPException(409, "the engine is still preparing this film and will plan its shots again: "
+                                 "change shots when it reaches the review cut")
 
 
 def not_regenerating(d: Path) -> None:
@@ -117,6 +137,7 @@ def regenerate(film: str, n: int, payload: ReviewIn) -> dict:
     d = film_or_404(film)
     if not payload.review.strip():
         raise HTTPException(400, "write what is wrong with the shot first")
+    not_replanning(d)
     running = job_running(d)
     if running:
         raise HTTPException(409, f"a {running['kind']} is running for this film: regenerate when it is done")
@@ -136,6 +157,7 @@ def approve_unreviewed(film: str) -> dict:
 @router.post("/films/{film}/rebuild", status_code=202)
 def rebuild(film: str) -> dict:
     d = film_or_404(film)
+    not_preparing(d)
     not_regenerating(d)
     try:
         return jobs.start(d, "rebuild")
@@ -146,6 +168,7 @@ def rebuild(film: str) -> dict:
 @router.post("/films/{film}/render", status_code=202)
 def render(film: str, payload: RenderIn | None = None) -> dict:
     d = film_or_404(film)
+    not_preparing(d)
     not_regenerating(d)
     try:
         return jobs.start(d, "render", sound=bool(payload and payload.sound))
@@ -172,7 +195,7 @@ def frame(film: str, n: int) -> FileResponse:
 
 @router.get("/films/{film}/thumb/{item_id}.jpg")
 def thumb(film: str, item_id: str) -> FileResponse:
-    d = film_or_404(film)
+    d = film_or_404(film, preparing=True)
     path = still(lambda: review.thumb(d, item_id))
     if not path:
         raise HTTPException(404, "No picture")
@@ -183,7 +206,7 @@ def thumb(film: str, item_id: str) -> FileResponse:
 def film_file(film: str, path: str) -> FileResponse:
     """A file inside the film folder. `..` and absolute paths are refused; symlinks the film itself holds
     (a library folder kept elsewhere) are followed."""
-    d = film_or_404(film)
+    d = film_or_404(film, preparing=True)
     relative = Path(path)
     parts = relative.parts
     if not parts or relative.is_absolute() or ".." in parts or "\\" in path:

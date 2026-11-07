@@ -372,6 +372,15 @@ def test_a_partial_harvest_adds_to_the_library_and_never_drops_what_is_there():
     assert [e["id"] for e in harvest.merged_library(found, previous, partial=False)] == ["c0099"]
 
 
+def test_taken_ids_include_pictures_added_to_the_library_by_hand(tmp_path):
+    library = tmp_path / "library.json"
+    library.write_text(json.dumps({"items": [{"id": "c0002"}, {"id": "c0900"}]}), encoding="utf-8")
+    taken = harvest.taken_ids({"https://x/a.jpg": {"id": "c0002"}}, library)
+    assert taken == {"c0002", "c0900"}
+    assert harvest.next_id("c", taken) == "c0901"
+    assert harvest.taken_ids({}, tmp_path / "missing.json") == set()
+
+
 def test_internet_archive_keeps_only_public_domain_and_cc0_images(monkeypatch):
     def fake(url, params):
         if "advancedsearch" in url:

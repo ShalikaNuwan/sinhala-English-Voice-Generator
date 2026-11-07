@@ -98,18 +98,20 @@ DRAWN_KINDS = {"card", "chart", "map"}  # drawn in the film's palette already: n
 SUPERSAMPLE = 2  # stills are composed at twice the frame size, so slow motion does not stair-step
 ZOOM_TRAVEL = 0.10  # a Ken Burns move crosses no more than this much of the frame over a shot
 FILL_TOLERANCE = 0.16  # aspect within this of 16:9 fills; 3:2 (35 mm, the commonest photo) sits inside
-PRINT_FIT = 0.84  # a print fits within this much of the frame height (or width, if wider than 16:9)
+PRINT_FIT = 0.92  # a print fits within this much of the frame height (or width, if wider than 16:9)
 PRINT_PUSH = 0.05  # the print's push-in over the whole shot: very slow
 PRINT_BORDER = "0xE9E6DF"  # the print's thin off-white border
-# The ground behind a print: the photograph itself, blurred and darkened almost to black, so it reads as one
-# quiet toned mat across the film rather than a second copy of the picture competing with it.
-PRINT_DARKEN = 0.13
+# The ground behind a print: the photograph itself, blurred and darkened, so it reads as one quiet toned mat
+# across the film rather than a second copy of the picture competing with it. Not near black: the owner
+# found 0.13 too dark (2026-11-01).
+PRINT_DARKEN = 0.40
 # A small archival scan is shown smaller, not blown up: a 181x255 newspaper portrait stretched to the
 # full print size turns to mush. On screen a print is never more than this many times its own pixels.
 PRINT_MAX_UPSCALE = 3.0
-# With a name card or a date stamp on screen, a print moves into the frame's right-hand part, so the
-# lower-left text never runs into its border: this fraction of the width is kept clear for the text.
-PRINT_OVERLAY_CLEAR = 0.40
+# With a name card or a date stamp on screen, this fraction of the width on the left is kept clear for the
+# text and the print moves right of it. 0: the owner wants prints centred (2026-11-03); the card's dark
+# backing keeps it legible where it overlaps the print.
+PRINT_OVERLAY_CLEAR = 0.0
 PRINT_RIGHT_MARGIN = 0.035
 PAN_FIT = 0.90  # a document fills this much of the frame width (or height, for a wide one)
 DOCUMENT_KINDS = {"document", "newspaper"}
@@ -163,7 +165,7 @@ SUBTITLE_FONT = "Helvetica Neue"
 # The storyboard may give a scene another look (looks.py); this is the film's home look, `investigation`.
 COLOUR_GRADE = looks.INVESTIGATION_COLOUR
 BW_GRADE = looks.INVESTIGATION_BW
-VIGNETTE = "vignette=angle=PI/7:eval=init"
+VIGNETTE = "vignette=angle=PI/9:eval=init"
 GRAIN = "noise=c0s=4:c0f=t"  # luma only, renewed every frame: seen on a dark wall at 100%, not at a glance
 
 
@@ -354,19 +356,34 @@ def pan_chain(src_w: int, src_h: int, frames: int, width: int, height: int, fps:
 
 # --- overlays ---------------------------------------------------------------
 
-def overlay_fades(duration: float, out_by: float = OVERLAY_OUT_BY) -> str | None:
-    """Fade in over 0.4 s from 0.3 s, gone by 3.5 s; earlier if the shot ends sooner, none if too short."""
-    gone = min(out_by, duration - OVERLAY_END_MARGIN_S)
+def overlay_fades(duration: float, out_by: float = OVERLAY_OUT_BY, in_at: float = OVERLAY_IN_AT) -> str | None:
+    """Fade in over 0.4 s from 0.3 s (or its cue), up as long as one gone by 3.5 s; out earlier if the shot
+    ends sooner, none if too short. A cue too late to read comes up early enough instead."""
+    latest = duration - OVERLAY_END_MARGIN_S - OVERLAY_OUT_S - OVERLAY_MIN_HOLD_S - OVERLAY_IN_S - 0.05
+    in_at = max(OVERLAY_IN_AT, min(in_at, latest))
+    gone = min(in_at - OVERLAY_IN_AT + out_by, duration - OVERLAY_END_MARGIN_S)
     out_start = gone - OVERLAY_OUT_S
-    if out_start - (OVERLAY_IN_AT + OVERLAY_IN_S) < OVERLAY_MIN_HOLD_S:
+    if out_start - (in_at + OVERLAY_IN_S) < OVERLAY_MIN_HOLD_S:
         return None
-    return (f"fade=t=in:st={OVERLAY_IN_AT:.3f}:d={OVERLAY_IN_S:.3f}:alpha=1,"
+    return (f"fade=t=in:st={in_at:.3f}:d={OVERLAY_IN_S:.3f}:alpha=1,"
             f"fade=t=out:st={out_start:.3f}:d={OVERLAY_OUT_S:.3f}:alpha=1")
 
 
 def overlay_gone(duration: float, out_by: float = OVERLAY_OUT_BY) -> float:
     """When an overlay has fully faded out, in shot seconds."""
     return min(out_by, duration - OVERLAY_END_MARGIN_S)
+
+
+def overlay_in_at(card: dict | None) -> float:
+    """When a shot's overlay fades in: at 0.3 s, or for a name card at its cue (`in_at`: as the name is said)."""
+    return max(OVERLAY_IN_AT, float((card or {}).get("in_at") or 0))
+
+
+def overlay_out_by(card: dict | None, animated: bool) -> float:
+    """When a shot's overlay is gone: by 3.5 s (4.6 s if it types itself), or at the shot's end if it holds."""
+    if card and card.get("hold"):
+        return float("inf")
+    return TYPED_OUT_BY if animated else OVERLAY_OUT_BY
 
 
 def is_animated(card: dict | None) -> bool:
@@ -736,8 +753,11 @@ def shot_clip(shot: dict, clip: dict, still, out_path, width: int, height: int, 
         crop = ""
         if shot.get("crop"):                 # a reframe: run only the located part of the photograph
             x0, y0, x1, y1 = shot["crop"]
-            cw, ch = _even(size[0] * (x1 - x0)), _even(size[1] * (y1 - y0))
-            crop = f"crop={cw}:{ch}:{round(size[0] * x0)}:{round(size[1] * y0)},"
+            left, top = round(size[0] * x0), round(size[1] * y0)
+            # Even sizes, but never past the photograph's edge: a 983-pixel side rounds down, not up to 984.
+            cw = min(_even(size[0] * (x1 - x0)), (size[0] - left) // 2 * 2)
+            ch = min(_even(size[1] * (y1 - y0)), (size[1] - top) // 2 * 2)
+            crop = f"crop={cw}:{ch}:{left}:{top},"
             size = (cw, ch)
         treatment = choose_treatment(shot, size)
         mono = shot.get("colour") is None and shot.get("kind") not in DRAWN_KINDS and is_monochrome(still)
@@ -758,8 +778,9 @@ def shot_clip(shot: dict, clip: dict, still, out_path, width: int, height: int, 
         parts.append("[0:v]setsar=1[base]")
 
     animated = overlay is not None and Path(overlay).suffix.lower() == ".mov"
-    out_by = TYPED_OUT_BY if animated else OVERLAY_OUT_BY
-    fades = overlay_fades(clip["frames"] / fps, out_by) if overlay is not None else None
+    out_by = overlay_out_by(shot.get("overlay"), animated)
+    fades = (overlay_fades(clip["frames"] / fps, out_by, overlay_in_at(shot.get("overlay")))
+             if overlay is not None else None)
     current = "base"
     if fades:
         index = source.count("-i")
@@ -873,7 +894,7 @@ def make_overlay(card: dict, duration: float, folder: Path, width: int, height: 
     `"animate": true` a .mov in which the date types itself out before it is read."""
     graphics_key = _file_key(graphics.__file__)
     if is_animated(card):
-        gone = overlay_gone(duration, TYPED_OUT_BY)
+        gone = overlay_gone(duration, overlay_out_by(card, True))
         finish_by = max(motion.TYPE_FROM + 0.5, gone - OVERLAY_OUT_S - TYPED_HOLD_S)
         path = folder / f"{_digest([card, width, height, fps, round(gone, 3), graphics_key, _file_key(motion.__file__)])}.mov"
         if not path.exists():
@@ -994,7 +1015,7 @@ def render(shots_path, out_path, *, subtitles=None, limit=None, start_index=None
                 quote = quote_cards.make(shot, clip["frames"] + clip["tail"], work / "quotes", width, height, fps)
             except Exception as exc:  # noqa: BLE001 - a card that cannot be drawn must not stop the film
                 print(f"  WARNING: shot #{shot['index']} quote card skipped: {exc}", flush=True)
-        if card and overlay_fades(duration, TYPED_OUT_BY if animated else OVERLAY_OUT_BY):
+        if card and overlay_fades(duration, overlay_out_by(card, animated), overlay_in_at(card)):
             try:
                 overlay = make_overlay(card, duration, work / "overlays", width, height, fps)
             except ValueError as exc:

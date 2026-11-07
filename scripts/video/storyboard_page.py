@@ -30,7 +30,7 @@ LOOK_COLOURS = {
     "investigation": ("#9aa3a8", "Investigation"), "revelation": ("#b3121f", "Revelation"),
     "courtroom": ("#7d756c", "Courtroom"), "memorial": ("#d6d6d6", "Memorial"),
 }
-DEVICE_KINDS = {"board", "map", "profile", "exhibit", "highlight", "chart"}
+DEVICE_KINDS = {"board", "reveal", "explainer", "callback", "map", "profile", "exhibit", "highlight", "chart"}
 
 
 def clock(seconds: float) -> str:

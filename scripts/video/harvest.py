@@ -428,6 +428,14 @@ def relevant(name: str, title: str, person: bool) -> bool:
     return hits >= max(1, math.ceil(0.6 * len(wanted)))
 
 
+def taken_ids(cache: dict[str, dict], library_path: Path) -> set[str]:
+    """Ids already in use: the cache's, and the library's (pictures added by hand are in the library only)."""
+    taken = {rec["id"] for rec in cache.values()}
+    if library_path.exists():
+        taken |= {i["id"] for i in json.loads(library_path.read_text(encoding="utf-8")).get("items", [])}
+    return taken
+
+
 def next_id(prefix: str, taken: set[str]) -> str:
     numbers = [int(t[1:]) for t in taken if t.startswith(prefix) and t[1:].isdigit()]
     return f"{prefix}{(max(numbers) if numbers else 0) + 1:04d}"
@@ -792,17 +800,15 @@ def _page_title(html: str) -> str:
     return plain_text(match.group(1), fallback="") if match else ""
 
 
-def stage_web(video_dir: Path, blocked: list[str]) -> list[dict]:
-    seeds_path = video_dir / "library" / "web_seeds.json"
-    if not seeds_path.exists():
-        _log("web: no web_seeds.json")
+def stage_web(video_dir: Path, blocked: list[str], files=("web_seeds.json", "web_seeds_extra.json")) -> list[dict]:
+    """Pictures from web pages. web_seeds.json first; web_seeds_extra.json (the research pass) has the same
+    shape, and an entry may name the exact picture (`image_url`) instead of leaving it to the page's headline
+    image. A regeneration's web search passes its own file (library/pages.json, the `pages` stage)."""
+    paths = [video_dir / "library" / name for name in files]
+    if not paths[0].exists():
+        _log(f"web: no {files[0]}")
         return []
-    seeds = json.loads(seeds_path.read_text(encoding="utf-8"))
-    # A second seed file from the research pass: the same shape, and an entry may name the exact
-    # picture (`image_url`) instead of leaving it to the page's headline image.
-    extra_path = video_dir / "library" / "web_seeds_extra.json"
-    if extra_path.exists():
-        seeds += json.loads(extra_path.read_text(encoding="utf-8"))
+    seeds = [s for path in paths if path.exists() for s in json.loads(path.read_text(encoding="utf-8"))]
     cache_path = video_dir / "library" / "web_pages.json"
     cache = json.loads(cache_path.read_text(encoding="utf-8")) if cache_path.exists() else {}
 
@@ -989,10 +995,12 @@ def main() -> None:
         candidates += stage_web(video_dir, blocked)
     if "needs" in stages:
         candidates += stage_needs(video_dir)
+    if "pages" in stages:
+        candidates += stage_web(video_dir, blocked, files=("pages.json",))
     _log(f"candidates: {len(candidates)}")
 
     # Merge with cache, give ids, drop by URL and by reported size before downloading.
-    taken = {rec["id"] for rec in cache.values()}
+    taken = taken_ids(cache, video_dir / "library.json")
     work: list[dict] = []
     seen_urls: set[str] = set()
     for cand in candidates:
