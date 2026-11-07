@@ -1,0 +1,1322 @@
+{
+ "start": 2882.8,
+ "end": 3042.93,
+ "base": {
+  "kind": "plan",
+  "rooms": [
+   {
+    "box": [
+     6,
+     3,
+     94,
+     25
+    ],
+    "outer": true
+   },
+   {
+    "box": [
+     6,
+     31,
+     94,
+     53
+    ],
+    "outer": true
+   },
+   {
+    "box": [
+     6,
+     3,
+     48,
+     25
+    ],
+    "name": "Living room"
+   },
+   {
+    "box": [
+     48,
+     3,
+     72,
+     15
+    ],
+    "name": "Kitchen"
+   },
+   {
+    "box": [
+     72,
+     3,
+     94,
+     25
+    ],
+    "name": "Hall"
+   },
+   {
+    "box": [
+     60,
+     17,
+     70,
+     25
+    ],
+    "name": ""
+   },
+   {
+    "box": [
+     6,
+     31,
+     36,
+     53
+    ],
+    "name": "Lynda's room"
+   },
+   {
+    "box": [
+     26,
+     31,
+     36,
+     37
+    ],
+    "name": ""
+   },
+   {
+    "box": [
+     36,
+     31,
+     56,
+     53
+    ],
+    "name": "Roommate"
+   },
+   {
+    "box": [
+     60,
+     31,
+     70,
+     39
+    ],
+    "name": ""
+   },
+   {
+    "box": [
+     56,
+     39,
+     94,
+     53
+    ],
+    "name": "Basement"
+   }
+  ],
+  "notes": [
+   {
+    "pt": [
+     6,
+     0.6
+    ],
+    "text": "MAIN FLOOR",
+    "size": 1.1
+   },
+   {
+    "pt": [
+     6,
+     28.6
+    ],
+    "text": "BASEMENT",
+    "size": 1.1
+   },
+   {
+    "pt": [
+     58,
+     54.2
+    ],
+    "text": "DIAGRAM  \u00b7  LAYOUT SIMPLIFIED, NOT TO SCALE",
+    "size": 0.7
+   }
+  ]
+ },
+ "elements": [
+  {
+   "kind": "icon",
+   "icon": "tv",
+   "pt": [
+    20,
+    13
+   ],
+   "size": 3.4,
+   "at": 0.0,
+   "until": null,
+   "accent": false
+  },
+  {
+   "kind": "icon",
+   "icon": "phone",
+   "pt": [
+    80,
+    9
+   ],
+   "size": 2.6,
+   "at": 0.0,
+   "until": null,
+   "accent": false
+  },
+  {
+   "kind": "icon",
+   "icon": "door",
+   "pt": [
+    91.5,
+    14
+   ],
+   "size": 3.0,
+   "at": 0.0,
+   "until": null,
+   "accent": false
+  },
+  {
+   "kind": "icon",
+   "icon": "stairs",
+   "pt": [
+    65,
+    21
+   ],
+   "size": 4.4,
+   "at": 0.0,
+   "until": null,
+   "accent": false
+  },
+  {
+   "kind": "icon",
+   "icon": "stairs",
+   "pt": [
+    65,
+    35
+   ],
+   "size": 4.4,
+   "at": 0.0,
+   "until": null,
+   "accent": false
+  },
+  {
+   "kind": "icon",
+   "icon": "bed",
+   "pt": [
+    14,
+    44
+   ],
+   "size": 7.0,
+   "at": 0.0,
+   "until": null,
+   "accent": false
+  },
+  {
+   "kind": "icon",
+   "icon": "alarm",
+   "pt": [
+    22,
+    38.5
+   ],
+   "size": 2.4,
+   "at": 0.0,
+   "until": null,
+   "accent": false
+  },
+  {
+   "kind": "icon",
+   "icon": "closet",
+   "pt": [
+    31,
+    34
+   ],
+   "size": 3.6,
+   "at": 0.0,
+   "until": null,
+   "accent": false
+  },
+  {
+   "kind": "icon",
+   "icon": "bed",
+   "pt": [
+    46,
+    44
+   ],
+   "size": 7.0,
+   "at": 0.0,
+   "until": null,
+   "accent": false
+  },
+  {
+   "kind": "route",
+   "points": [
+    [
+     36,
+     31.2
+    ],
+    [
+     36,
+     52.8
+    ]
+   ],
+   "from": 6.2,
+   "to": 7.4,
+   "dash": false,
+   "width": 0.3,
+   "until": 13.6,
+   "head": false
+  },
+  {
+   "kind": "tag",
+   "text": "thin plywood partition",
+   "sub": null,
+   "pt": [
+    36,
+    47
+   ],
+   "at": 6.6,
+   "until": 13.6,
+   "offset": [
+    4.5,
+    3.5
+   ],
+   "scale": 0.85
+  },
+  {
+   "kind": "pulse",
+   "pt": [
+    22,
+    38.5
+   ],
+   "at": 2.3,
+   "until": 34.5,
+   "radius": 3.2,
+   "period": 0.8
+  },
+  {
+   "kind": "tag",
+   "text": "ROOMMATE",
+   "sub": "heard it, went back to sleep",
+   "pt": [
+    46,
+    44
+   ],
+   "at": 7.6,
+   "until": 13.6,
+   "offset": [
+    0,
+    -6.5
+   ],
+   "scale": 0.85
+  },
+  {
+   "kind": "pulse",
+   "pt": [
+    80,
+    9
+   ],
+   "at": 14.3,
+   "until": 17.6,
+   "radius": 2.6,
+   "period": 0.5
+  },
+  {
+   "kind": "photo",
+   "library_id": "n0174",
+   "pt": [
+    83,
+    19.5
+   ],
+   "h": 7.5,
+   "at": 15.6,
+   "until": 20.6,
+   "angle": 1.5
+  },
+  {
+   "kind": "tag",
+   "text": "HER EMPLOYER CALLS",
+   "sub": "she hasn't arrived for her morning report",
+   "pt": [
+    80,
+    9
+   ],
+   "at": 15.8,
+   "until": 20.6,
+   "offset": [
+    -10,
+    -1
+   ],
+   "scale": 0.8,
+   "accent": true
+  },
+  {
+   "kind": "route",
+   "points": [
+    [
+     80,
+     10.5
+    ],
+    [
+     68,
+     21
+    ],
+    [
+     65,
+     24
+    ],
+    [
+     65,
+     33
+    ],
+    [
+     58,
+     36
+    ],
+    [
+     40,
+     41
+    ],
+    [
+     20,
+     42
+    ]
+   ],
+   "from": 20.4,
+   "to": 23.4,
+   "accent": false,
+   "until": 35.0
+  },
+  {
+   "kind": "tag",
+   "text": "NOT IN HER ROOM",
+   "sub": null,
+   "pt": [
+    14,
+    40
+   ],
+   "at": 22.6,
+   "until": 35.0,
+   "offset": [
+    9,
+    -4.5
+   ],
+   "scale": 0.9,
+   "accent": true
+  },
+  {
+   "kind": "tag",
+   "text": "no sign of a struggle",
+   "sub": null,
+   "pt": [
+    24,
+    49
+   ],
+   "at": 24.6,
+   "until": 35.0,
+   "offset": [
+    3,
+    3
+   ],
+   "scale": 0.8
+  },
+  {
+   "kind": "tag",
+   "text": "bed neatly made",
+   "sub": null,
+   "pt": [
+    14,
+    47
+   ],
+   "at": 27.5,
+   "until": 35.0,
+   "offset": [
+    -1,
+    4.5
+   ],
+   "scale": 0.8
+  },
+  {
+   "kind": "tag",
+   "text": "alarm switched off",
+   "sub": null,
+   "pt": [
+    22,
+    38.5
+   ],
+   "at": 33.6,
+   "until": 35.0,
+   "offset": [
+    5,
+    -3
+   ],
+   "scale": 0.75
+  },
+  {
+   "kind": "route",
+   "points": [
+    [
+     18,
+     42
+    ],
+    [
+     40,
+     42
+    ],
+    [
+     60,
+     36
+    ],
+    [
+     65,
+     33
+    ],
+    [
+     65,
+     22
+    ],
+    [
+     78,
+     16
+    ],
+    [
+     91,
+     14
+    ],
+    [
+     99,
+     14
+    ]
+   ],
+   "from": 35.4,
+   "to": 38.0,
+   "until": 42.6
+  },
+  {
+   "kind": "tag",
+   "text": "on her way to work?",
+   "sub": null,
+   "pt": [
+    93,
+    14
+   ],
+   "at": 37.0,
+   "until": 42.6,
+   "offset": [
+    -4,
+    -5
+   ],
+   "scale": 0.85
+  },
+  {
+   "kind": "tag",
+   "text": "no one hears from her",
+   "sub": null,
+   "pt": [
+    50,
+    28
+   ],
+   "at": 41.3,
+   "until": 46.8,
+   "offset": [
+    0,
+    0
+   ],
+   "leader": false,
+   "scale": 0.9
+  },
+  {
+   "kind": "icon",
+   "icon": "bicycle",
+   "pt": [
+    82,
+    46
+   ],
+   "size": 4.0,
+   "at": 42.9,
+   "until": null,
+   "accent": true
+  },
+  {
+   "kind": "tag",
+   "text": "HER BICYCLE",
+   "sub": "still in the basement",
+   "pt": [
+    82,
+    46
+   ],
+   "at": 43.2,
+   "until": 51.0,
+   "offset": [
+    -8,
+    -4
+   ],
+   "scale": 0.85,
+   "accent": true
+  },
+  {
+   "kind": "tag",
+   "text": "none of them saw her on campus",
+   "sub": null,
+   "pt": [
+    27,
+    14
+   ],
+   "at": 48.4,
+   "until": 52.0,
+   "offset": [
+    0,
+    6
+   ],
+   "scale": 0.85
+  },
+  {
+   "kind": "icon",
+   "icon": "bag",
+   "pt": [
+    60,
+    9.5
+   ],
+   "size": 3.0,
+   "at": 55.0,
+   "until": null,
+   "accent": true
+  },
+  {
+   "kind": "tag",
+   "text": "GROCERIES",
+   "sub": "for the family dinner, bought the night before",
+   "pt": [
+    60,
+    9.5
+   ],
+   "at": 56.6,
+   "until": 61.2,
+   "offset": [
+    0,
+    7.5
+   ],
+   "scale": 0.8,
+   "accent": true
+  },
+  {
+   "kind": "tag",
+   "text": "she wasn't there",
+   "sub": null,
+   "pt": [
+    27,
+    10
+   ],
+   "at": 59.9,
+   "until": 64.0,
+   "offset": [
+    0,
+    0
+   ],
+   "leader": false,
+   "scale": 0.95
+  },
+  {
+   "kind": "photo",
+   "library_id": "c0333",
+   "pt": [
+    83.5,
+    17.5
+   ],
+   "h": 9.0,
+   "at": 65.4,
+   "until": 72.0,
+   "angle": -2
+  },
+  {
+   "kind": "tag",
+   "text": "SEATTLE POLICE",
+   "sub": "called by her family and housemates",
+   "pt": [
+    83.5,
+    17.5
+   ],
+   "at": 66.0,
+   "until": 72.0,
+   "offset": [
+    -13,
+    3
+   ],
+   "scale": 0.8
+  },
+  {
+   "kind": "route",
+   "points": [
+    [
+     99,
+     14
+    ],
+    [
+     91,
+     14
+    ],
+    [
+     78,
+     16
+    ],
+    [
+     68,
+     21
+    ],
+    [
+     65,
+     24
+    ],
+    [
+     65,
+     33
+    ],
+    [
+     58,
+     36
+    ],
+    [
+     40,
+     41
+    ],
+    [
+     24,
+     43
+    ]
+   ],
+   "from": 68.1,
+   "to": 71.0,
+   "accent": false,
+   "until": 96.0
+  },
+  {
+   "kind": "tag",
+   "text": "at first, everything looked orderly",
+   "sub": null,
+   "pt": [
+    21,
+    34
+   ],
+   "at": 71.2,
+   "until": 74.0,
+   "offset": [
+    0,
+    -5.2
+   ],
+   "scale": 0.8
+  },
+  {
+   "kind": "mark",
+   "box": [
+    9.5,
+    38.5,
+    18.5,
+    50
+   ],
+   "at": 74.6,
+   "until": 96.0
+  },
+  {
+   "kind": "tag",
+   "text": "PILLOW",
+   "sub": "stained with dried blood",
+   "pt": [
+    14,
+    40
+   ],
+   "at": 76.6,
+   "until": 96.0,
+   "offset": [
+    -1.5,
+    -7
+   ],
+   "scale": 0.8,
+   "accent": true
+  },
+  {
+   "kind": "tag",
+   "text": "MATTRESS",
+   "sub": "blood soaked through the sheets",
+   "pt": [
+    14,
+    49
+   ],
+   "at": 79.4,
+   "until": 96.0,
+   "offset": [
+    2,
+    4.5
+   ],
+   "scale": 0.8,
+   "accent": true
+  },
+  {
+   "kind": "mark",
+   "box": [
+    26.2,
+    31.4,
+    35.8,
+    36.8
+   ],
+   "at": 83.4,
+   "until": 96.0
+  },
+  {
+   "kind": "tag",
+   "text": "NIGHTDRESS",
+   "sub": "hanging in the closet; neckline stiff with blood",
+   "pt": [
+    31,
+    34
+   ],
+   "at": 84.8,
+   "until": 96.0,
+   "offset": [
+    -4,
+    -5.0
+   ],
+   "scale": 0.8,
+   "accent": true
+  },
+  {
+   "kind": "mark",
+   "box": [
+    6.6,
+    31.6,
+    35.4,
+    52.4
+   ],
+   "at": 90.0,
+   "until": 96.0
+  },
+  {
+   "kind": "tag",
+   "text": "the room left looking orderly",
+   "sub": null,
+   "pt": [
+    21,
+    52
+   ],
+   "at": 91.0,
+   "until": 96.0,
+   "offset": [
+    0,
+    2.4
+   ],
+   "leader": false,
+   "scale": 0.85
+  },
+  {
+   "kind": "tag",
+   "text": "not made the way Lynda made it",
+   "sub": null,
+   "pt": [
+    14,
+    47
+   ],
+   "at": 100.6,
+   "until": 117.0,
+   "offset": [
+    1,
+    4.5
+   ],
+   "scale": 0.8,
+   "accent": true
+  },
+  {
+   "kind": "icon",
+   "icon": "key",
+   "pt": [
+    87,
+    8
+   ],
+   "size": 2.6,
+   "at": 109.2,
+   "until": 126.0,
+   "accent": true
+  },
+  {
+   "kind": "tag",
+   "text": "FRONT-DOOR KEYS LOST",
+   "sub": null,
+   "pt": [
+    87,
+    8
+   ],
+   "at": 109.4,
+   "until": 126.0,
+   "offset": [
+    -10,
+    -2
+   ],
+   "scale": 0.75,
+   "accent": true
+  },
+  {
+   "kind": "mark",
+   "box": [
+    89.5,
+    11.5,
+    94.4,
+    16.5
+   ],
+   "at": 113.6,
+   "until": 126.0
+  },
+  {
+   "kind": "tag",
+   "text": "LEFT UNLOCKED",
+   "sub": "so everyone could get in",
+   "pt": [
+    93,
+    14
+   ],
+   "at": 114.6,
+   "until": 126.0,
+   "offset": [
+    -7,
+    7
+   ],
+   "scale": 0.8,
+   "accent": true
+  },
+  {
+   "kind": "text",
+   "pt": [
+    50,
+    28
+   ],
+   "text": "?",
+   "size": 5,
+   "bold": true,
+   "at": 125.0,
+   "until": 131.6
+  },
+  {
+   "kind": "dim",
+   "at": 124.8,
+   "until": 131.8,
+   "amount": 0.5
+  },
+  {
+   "kind": "photo",
+   "library_id": "c0021",
+   "pt": [
+    83,
+    18
+   ],
+   "h": 10,
+   "at": 140.2,
+   "until": 147.0,
+   "angle": 2
+  },
+  {
+   "kind": "tag",
+   "text": "TED BUNDY'S CONFESSION",
+   "sub": "as accounts give it",
+   "pt": [
+    83,
+    18
+   ],
+   "at": 140.6,
+   "until": 147.0,
+   "offset": [
+    -15,
+    -1
+   ],
+   "scale": 0.8,
+   "accent": true
+  },
+  {
+   "kind": "route",
+   "points": [
+    [
+     100,
+     14
+    ],
+    [
+     91,
+     14
+    ],
+    [
+     78,
+     16
+    ],
+    [
+     68,
+     21
+    ],
+    [
+     65,
+     24
+    ],
+    [
+     65,
+     33
+    ],
+    [
+     58,
+     36
+    ],
+    [
+     40,
+     42
+    ],
+    [
+     20,
+     43
+    ]
+   ],
+   "from": 142.4,
+   "to": 147.2,
+   "width": 0.3
+  },
+  {
+   "kind": "tag",
+   "text": "unlocked front door",
+   "sub": null,
+   "pt": [
+    93,
+    14
+   ],
+   "at": 143.4,
+   "until": 147.0,
+   "offset": [
+    -3,
+    -5.5
+   ],
+   "scale": 0.8
+  },
+  {
+   "kind": "tag",
+   "text": "LYNDA, ASLEEP",
+   "sub": null,
+   "pt": [
+    14,
+    44
+   ],
+   "at": 147.2,
+   "until": 160.2,
+   "offset": [
+    -1,
+    -7
+   ],
+   "scale": 0.85
+  },
+  {
+   "kind": "mark",
+   "box": [
+    26.2,
+    31.4,
+    35.8,
+    36.8
+   ],
+   "at": 158.6
+  },
+  {
+   "kind": "tag",
+   "text": "nightdress hung in the closet",
+   "sub": null,
+   "pt": [
+    31,
+    34
+   ],
+   "at": 158.9,
+   "offset": [
+    -4,
+    -5.0
+   ],
+   "scale": 0.8,
+   "accent": true
+  }
+ ],
+ "camera": [
+  [
+   0.0,
+   0.24,
+   0.7667,
+   2.45
+  ],
+  [
+   4.6,
+   0.25,
+   0.7667,
+   2.5
+  ],
+  [
+   6.4,
+   0.34,
+   0.7489,
+   2.25
+  ],
+  [
+   12.8,
+   0.34,
+   0.7489,
+   2.3
+  ],
+  [
+   14.2,
+   0.81,
+   0.2333,
+   2.35
+  ],
+  [
+   19.8,
+   0.79,
+   0.2333,
+   2.4
+  ],
+  [
+   21.4,
+   0.6,
+   0.5,
+   1.6
+  ],
+  [
+   23.4,
+   0.22,
+   0.7667,
+   2.3
+  ],
+  [
+   33.8,
+   0.22,
+   0.7489,
+   2.45
+  ],
+  [
+   37.0,
+   0.52,
+   0.5,
+   1.05
+  ],
+  [
+   42.4,
+   0.52,
+   0.5,
+   1.08
+  ],
+  [
+   43.8,
+   0.8,
+   0.8022,
+   2.4
+  ],
+  [
+   47.6,
+   0.7,
+   0.7133,
+   1.6
+  ],
+  [
+   48.8,
+   0.28,
+   0.2689,
+   1.9
+  ],
+  [
+   52.6,
+   0.34,
+   0.2511,
+   1.8
+  ],
+  [
+   55.4,
+   0.6,
+   0.2156,
+   2.3
+  ],
+  [
+   60.2,
+   0.55,
+   0.2511,
+   1.9
+  ],
+  [
+   65.6,
+   0.82,
+   0.2689,
+   2.2
+  ],
+  [
+   68.4,
+   0.8,
+   0.2867,
+   2.0
+  ],
+  [
+   71.0,
+   0.24,
+   0.7489,
+   2.1
+  ],
+  [
+   74.4,
+   0.18,
+   0.7667,
+   2.5
+  ],
+  [
+   82.8,
+   0.22,
+   0.7311,
+   2.4
+  ],
+  [
+   84.2,
+   0.28,
+   0.66,
+   2.6
+  ],
+  [
+   89.6,
+   0.26,
+   0.6956,
+   2.3
+  ],
+  [
+   92.4,
+   0.22,
+   0.7489,
+   1.9
+  ],
+  [
+   97.6,
+   0.22,
+   0.7489,
+   1.95
+  ],
+  [
+   100.8,
+   0.16,
+   0.8022,
+   2.4
+  ],
+  [
+   106.2,
+   0.8,
+   0.2156,
+   2.1
+  ],
+  [
+   110.0,
+   0.86,
+   0.2156,
+   2.5
+  ],
+  [
+   116.6,
+   0.86,
+   0.2333,
+   2.5
+  ],
+  [
+   119.5,
+   0.5,
+   0.5,
+   1.02
+  ],
+  [
+   131.9,
+   0.5,
+   0.5,
+   1.06
+  ],
+  [
+   139.6,
+   0.8,
+   0.2867,
+   2.1
+  ],
+  [
+   142.2,
+   0.86,
+   0.2689,
+   2.3
+  ],
+  [
+   144.2,
+   0.7,
+   0.3933,
+   1.8
+  ],
+  [
+   145.8,
+   0.62,
+   0.5711,
+   1.9
+  ],
+  [
+   147.6,
+   0.22,
+   0.7489,
+   2.3
+  ],
+  [
+   156.4,
+   0.24,
+   0.7311,
+   2.35
+  ],
+  [
+   158.6,
+   0.28,
+   0.66,
+   2.55
+  ],
+  [
+   160.2,
+   0.28,
+   0.66,
+   2.6
+  ]
+ ],
+ "smooth": 0.5,
+ "hud": [
+  {
+   "kind": "stamp",
+   "text": "Friday, February 1, 1974",
+   "sub": "Lynda Ann Healy's house, Seattle",
+   "at": 0.3,
+   "until": 34.0
+  },
+  {
+   "kind": "clock",
+   "start": "5:30",
+   "end": "6:00",
+   "move_from": 7.6,
+   "move_to": 10.8,
+   "at": 0.4,
+   "until": 13.6
+  },
+  {
+   "kind": "clock",
+   "start": "8:00",
+   "end": "18:30",
+   "move_from": 38.8,
+   "move_to": 52.4,
+   "at": 38.6,
+   "until": 57.0,
+   "digits": false
+  },
+  {
+   "kind": "note",
+   "text": "Diagram: layout simplified",
+   "at": 0.5,
+   "until": 131.0
+  }
+ ],
+ "fades": [
+  [
+   129.4,
+   131.9,
+   0.0,
+   0.9
+  ],
+  [
+   131.9,
+   139.7,
+   0.9,
+   0.9
+  ],
+  [
+   139.7,
+   140.5,
+   0.9,
+   0.0
+  ]
+ ]
+}

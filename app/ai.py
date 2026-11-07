@@ -8,10 +8,11 @@ from pathlib import Path
 
 from openai import AsyncOpenAI, OpenAI
 
-from . import elevenlabs, turns
+from . import elevenlabs, fact_check, turns
 from .direction import build_instructions, speaking_speed
 from .recordings import NARRATOR
 from .schemas import FaithfulTranslation, NarrationAdaptation, QAEvaluation
+from .sentences import SplitDecision
 
 
 PROMPT_VERSION = "2026-09-mvp3"
@@ -38,6 +39,17 @@ def _run_coroutine(coroutine):
         return asyncio.run(coroutine)
     with ThreadPoolExecutor(max_workers=1) as pool:
         return pool.submit(asyncio.run, coroutine).result()
+
+
+def _break_marks(a_narration: str, b_narration: str) -> str:
+    """A plain note when the narration shows its own break mark (… or ...) at the cut, so the model
+    knows that sentence is broken and has to be mended."""
+    notes = []
+    if a_narration.rstrip().endswith(("…", "...")):
+        notes.append("The narration of A ends with a break mark: its last sentence is broken at the cut and must be mended.")
+    if b_narration.lstrip().startswith(("…", "...")):
+        notes.append("The narration of B starts with a break mark: its first sentence is broken at the cut and must be mended.")
+    return "".join(f"{note}\n" for note in notes)
 
 
 class AIClient:
@@ -398,4 +410,64 @@ class AIClient:
         )
         if not response.output_parsed:
             raise RuntimeError("QA model did not return a structured result")
+        return response.output_parsed
+
+    def check_facts(self, text: str, context: str, topic: str, model: str) -> tuple[fact_check.FactReport, set[str]]:
+        """Check a passage's facts with web search: the report and the links the search returned."""
+        return fact_check.ask_model(text, context, topic, model, self.client)
+
+    def split_sentence(self, a_narration: str, a_faithful: str, b_narration: str, b_faithful: str, model: str) -> SplitDecision:
+        """Whether a sentence crosses the cut between segments A and B, decided for each text on its own.
+
+        The answer names exact words; `sentences` checks that they are an exact edge of the text before
+        moving them, and that a joined sentence uses only the words it replaces.
+        """
+        response = self.client.responses.parse(
+            model=model,
+            input=[
+                {
+                    "role": "system",
+                    "content": (
+                        "A narrated story was cut into audio segments at silences, and each segment was translated "
+                        "on its own. Sometimes a cut falls inside a sentence: the sentence starts at the end of "
+                        "segment A and finishes at the start of segment B. You see the end of A and the start of B "
+                        "twice: as the narration script and as the faithful English translation. Decide each text on "
+                        "its own; they are often cut differently.\n"
+                        "- When the text on both sides already reads as whole sentences, that text is no split: "
+                        "leave its direction and fragment empty. The narration is often already whole when the "
+                        "faithful English is split, because the script writer carried the missing words across.\n"
+                        "- Never move a fragment whose words, or their meaning, already appear on the other side of "
+                        "the cut; that would say them twice.\n"
+                        "- When a sentence does cross the cut cleanly, move its smaller half. direction back: the "
+                        "fragment is the very start of B and joins the end of A. direction forward: the fragment is the "
+                        "very end of A and joins the start of B. Copy that fragment exactly, character for character.\n"
+                        "- Often the cut left A ending in a broken sentence (frequently marked with \u2026 or ...) and "
+                        "B starts by finishing it or saying it again in other words, e.g. A ends \"At that time, Ted had "
+                        "never\u2026\" and B starts \"He'd never been caught by police for anything.\" Then use direction "
+                        "merge: a_tail = the broken sentence at the very end of A, b_head = the words at the very start "
+                        "of B that finish or repeat it (both copied exactly, character for character), fragment = one "
+                        "clean sentence that says it once, and place = a or b, the segment that already holds more of "
+                        "it (a when even). Write the joined sentence only from the words of a_tail and b_head: you may "
+                        "drop repeated words, the \u2026 marks and fix the grammar where they meet, but never add a "
+                        "name, number, date, place, or any word or fact that is not in them.\n"
+                        "- Copy every quoted piece from the text it comes from: the narration pieces from the "
+                        "narration, the faithful pieces from the faithful English. Never skip words in between.\n"
+                        "- reason: one short sentence."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"{_break_marks(a_narration, b_narration)}"
+                        f"End of segment A, narration:\n<<<\n{a_narration}\n>>>\n"
+                        f"End of segment A, faithful English:\n<<<\n{a_faithful}\n>>>\n"
+                        f"Start of segment B, narration:\n<<<\n{b_narration}\n>>>\n"
+                        f"Start of segment B, faithful English:\n<<<\n{b_faithful}\n>>>"
+                    ),
+                },
+            ],
+            text_format=SplitDecision,
+        )
+        if not response.output_parsed:
+            raise RuntimeError("Sentence fix model did not return a structured result")
         return response.output_parsed

@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import shutil
+import threading
 import traceback
 import uuid
 from pathlib import Path
 from typing import Callable, TypeVar
 
-from . import breaks, pauses, recordings, script_parts, speaking_profile, turns
+from . import breaks, fact_check, pauses, recordings, script_parts, sentences, speaking_profile, turns
 from .ai import AIClient, PROMPT_VERSION
 from .audio import AudioError, AudioService
 from .config import Settings
@@ -37,11 +39,22 @@ def kept_qa() -> dict:
     }
 
 
+# The checks that run over a whole job's English after it is written, as the task tracker names them.
+TASK_LABELS = {"sentences": "Sentence fix", "facts": "Fact check"}
+
+
+class TaskBusy(RuntimeError):
+    """A task of this kind is already running for the job."""
+
+
 class Pipeline:
     def __init__(self, db: Database, config: Settings, audio: AudioService | None = None):
         self.db = db
         self.config = config
         self.audio = audio or AudioService(config.ffmpeg, config.ffprobe)
+        # Progress of the sentence fix and fact check per job, in memory only: a restart forgets it.
+        self.tasks: dict[str, dict[str, dict]] = {}
+        self._tasks_lock = threading.Lock()
 
     def _elevenlabs_config(self) -> dict | None:
         """The ElevenLabs settings, or None when voicing stays on OpenAI.
@@ -472,19 +485,10 @@ class Pipeline:
         except AudioError as exc:
             self._warn(job["id"], f"Voice left unmastered on segment {segment['segment_index']}: {str(exc)[:200]}")
 
-    def _narrate_segment(
-        self,
-        ai: AIClient,
-        job: dict,
-        project: dict,
-        segment: dict,
-        profile: dict | None,
-        previous_context: str,
-        previous_style: dict | None,
-        persona: str | None,
-        speed: float,
-    ) -> tuple[str, dict]:
-        """Run every narration stage for one segment and return the context the next one inherits."""
+    def _write_segment(
+        self, ai: AIClient, job: dict, project: dict, segment: dict, previous_context: str,
+    ) -> tuple[str, dict, bool]:
+        """The text pass of one segment: transcribe, translate, adapt. Returns (narration, style, lines_ok)."""
         job_id, segment_id, config = job["id"], segment["id"], job["config"]
         transcript = self._tracked_call(
             job_id, segment_id, "transcription", config["stt_model"], str(segment["source_audio_path"]),
@@ -509,7 +513,29 @@ class Pipeline:
             "UPDATE segments SET narration_en=?, style_json=?, lines_json=?, status='adapted', updated_at=? WHERE id=?",
             (narration_text, json.dumps(style), json.dumps(lines), utc_now(), segment_id),
         )
+        return narration_text, style, lines_ok
 
+    def _finish_segment(
+        self,
+        ai: AIClient,
+        job: dict,
+        project: dict,
+        segment_id: str,
+        profile: dict | None,
+        previous_context: str,
+        previous_style: dict | None,
+        persona: str | None,
+        speed: float,
+        lines_ok: bool,
+    ) -> tuple[str, dict]:
+        """The finish pass of one segment, on its stored (possibly sentence-fixed) text: voice when on, then QA.
+
+        Returns the context the next segment inherits.
+        """
+        job_id, config = job["id"], job["config"]
+        segment = self.db.one("SELECT * FROM segments WHERE id=?", (segment_id,))
+        assert segment
+        narration_text, faithful_text, style = segment["narration_en"], segment["faithful_en"], segment["style"] or {}
         shaped, tts_duration = None, None
         if config.get("voice_stage", self.config.voice_stage):
             stem = f"{segment['segment_index']:04d}_r{segment['revision']:02d}"
@@ -530,10 +556,10 @@ class Pipeline:
             )
 
         qa = self._tracked_call(
-            job_id, segment_id, "qa", config["qa_model"], faithful.english_faithful + narration_text,
-            lambda: ai.evaluate(faithful.english_faithful, narration_text, config["qa_model"]),
+            job_id, segment_id, "qa", config["qa_model"], faithful_text + narration_text,
+            lambda: ai.evaluate(faithful_text, narration_text, config["qa_model"]),
         )
-        qa_payload = self._qa_verdict(qa, transcript, tts_duration, segment, shaped)
+        qa_payload = self._qa_verdict(qa, segment["transcript_si"], tts_duration, segment, shaped)
         if not lines_ok:
             qa_payload["passed"] = False
             qa_payload["issues"] = qa_payload["issues"] + ["Script lines do not follow the spoken runs"]
@@ -543,6 +569,107 @@ class Pipeline:
             (json.dumps(qa_payload), qa_status, qa_status, utc_now(), segment_id),
         )
         return narration_text, style
+
+    def _narrate_segment(
+        self,
+        ai: AIClient,
+        job: dict,
+        project: dict,
+        segment: dict,
+        profile: dict | None,
+        previous_context: str,
+        previous_style: dict | None,
+        persona: str | None,
+        speed: float,
+    ) -> tuple[str, dict]:
+        """Run every narration stage for one segment and return the context the next one inherits."""
+        _narration, _style, lines_ok = self._write_segment(ai, job, project, segment, previous_context)
+        return self._finish_segment(ai, job, project, segment["id"], profile, previous_context, previous_style, persona, speed, lines_ok)
+
+    # --- whole-job checks: sentence fix and fact check -------------------------------------------------
+
+    def task_status(self, job_id: str) -> dict:
+        """Where each whole-job check stands for a job: None when it has not run since the server started."""
+        with self._tasks_lock:
+            return copy.deepcopy({kind: self.tasks.get(job_id, {}).get(kind) for kind in TASK_LABELS})
+
+    def _claim_task(self, job_id: str, kind: str) -> None:
+        """Mark a check as running for the job, or refuse when it already is."""
+        with self._tasks_lock:
+            entries = self.tasks.setdefault(job_id, {})
+            if (entries.get(kind) or {}).get("state") == "running":
+                raise TaskBusy(f"{TASK_LABELS[kind]} is already running for this job")
+            entries[kind] = {"state": "running", "done": 0, "total": 0, "error": ""}
+            if kind == "sentences":
+                entries[kind]["changed"] = []
+
+    def _task_progress(self, job_id: str, kind: str, done: int, total: int) -> None:
+        with self._tasks_lock:
+            self.tasks[job_id][kind] |= {"done": done, "total": total}
+
+    def _run_task(self, job_id: str, kind: str, work: Callable[[Callable[[int, int], None]], list[int] | None]) -> None:
+        """Run a claimed check to its end. A failure is recorded on the task and the job, never raised:
+        both checks improve the English, and neither may fail the job that wrote it."""
+        try:
+            result = work(lambda done, total: self._task_progress(job_id, kind, done, total))
+        except Exception as exc:  # noqa: BLE001 - reported on the task and as a job warning
+            traceback.print_exc()
+            with self._tasks_lock:
+                self.tasks[job_id][kind] |= {"state": "failed", "error": str(exc)[:500]}
+            self._warn(job_id, f"{TASK_LABELS[kind]} failed: {str(exc)[:200]}")
+            return
+        with self._tasks_lock:
+            self.tasks[job_id][kind]["state"] = "done"
+            if kind == "sentences":
+                self.tasks[job_id][kind]["changed"] = list(result or [])
+
+    def _launch(self, job_id: str, kind: str, work: Callable[[Callable[[int, int], None]], list[int] | None]) -> threading.Thread:
+        self._claim_task(job_id, kind)
+        thread = threading.Thread(target=self._run_task, args=(job_id, kind, work), name=f"{kind}-{job_id[:8]}", daemon=True)
+        thread.start()
+        return thread
+
+    def _sentence_pass(self, job_id: str, on_progress: Callable[[int, int], None]) -> list[int]:
+        """Mend the sentences the segment cuts split, in the English only; returns the changed segment indices."""
+        # Today's model, whatever wrote the job: older models leave broken sentences and their echoes alone.
+        model = self.config.text_model
+        ai = self._ai()
+
+        def decide(a: dict, b: dict) -> sentences.SplitDecision:
+            excerpt = sentences.excerpts(a, b)
+            return self._tracked_call(job_id, a["id"], "sentence_fix", model, "\n".join(excerpt), lambda: ai.split_sentence(*excerpt, model))
+
+        return sentences.fix_job(self.db, job_id, decide, lambda message: self._warn(job_id, message), on_progress=on_progress)
+
+    def _run_fact_check(self, job_id: str, segment_id: str | None, on_progress: Callable[[int, int], None]) -> None:
+        """Check the facts of a job's narration, or of one segment, on the web; the text is never changed."""
+        job = self.db.one("SELECT project_id FROM jobs WHERE id=?", (job_id,))
+        project = self.db.one("SELECT topic FROM projects WHERE id=?", ((job or {}).get("project_id"),)) or {}
+        # Today's model, whatever wrote the job: an older job's model may not search the web at all.
+        model = self.config.text_model
+        ai = self._ai()
+        fact_check.check_job(
+            self.db, job_id, lambda text, context: ai.check_facts(text, context, project.get("topic", ""), model),
+            segment_id=segment_id, on_progress=on_progress,
+        )
+
+    def _fix_sentences(self, job_id: str) -> None:
+        """The pipeline's sentence-fix stage, reported through the task tracker like the button."""
+        self._claim_task(job_id, "sentences")
+        self._run_task(job_id, "sentences", lambda progress: self._sentence_pass(job_id, progress))
+
+    def _check_facts(self, job_id: str, segment_id: str | None = None) -> None:
+        """The pipeline's fact-check stage, reported through the task tracker like the button."""
+        self._claim_task(job_id, "facts")
+        self._run_task(job_id, "facts", lambda progress: self._run_fact_check(job_id, segment_id, progress))
+
+    def start_fix_sentences(self, job_id: str) -> threading.Thread:
+        """Mend a job's split sentences in the background; TaskBusy when that is already running."""
+        return self._launch(job_id, "sentences", lambda progress: self._sentence_pass(job_id, progress))
+
+    def start_check_facts(self, job_id: str, segment_id: str | None = None) -> threading.Thread:
+        """Check a job's facts, or one segment's, in the background; TaskBusy when a check already runs for the job."""
+        return self._launch(job_id, "facts", lambda progress: self._run_fact_check(job_id, segment_id, progress))
 
     def process_job(self, job_id: str) -> None:
         job = self.db.one("SELECT * FROM jobs WHERE id=?", (job_id,))
@@ -573,12 +700,13 @@ class Pipeline:
             segment_ids = self._create_segments(job_id, project, normalized, chunks, reference, config)
 
             ai = self._ai()
-            previous_context = ""
-            previous_style: dict | None = None
             persona, speed = self._direction_inputs(project, config)
             total = len(segment_ids)
+            # Text pass: every segment's English is written before any of it is mended, voiced or checked.
+            previous_context = ""
+            lines_ok: dict[str, bool] = {}
             for position, segment_id in enumerate(segment_ids):
-                base_progress = 10 + round(80 * position / max(total, 1))
+                base_progress = 10 + round(40 * position / max(total, 1))
                 segment = self.db.one("SELECT * FROM segments WHERE id=?", (segment_id,))
                 assert segment
                 if segment["kind"] == "original":
@@ -586,9 +714,37 @@ class Pipeline:
                     previous_context += f"\n[Recording plays: {(segment['transcript_si'] or '')[:200]}]"
                     continue
                 self._job_update(job_id, status="running", stage=f"transcribing {position + 1}/{total}", progress=base_progress)
-                previous_context, previous_style = self._narrate_segment(
-                    ai, job, project, segment, profile, previous_context, previous_style, persona, speed,
+                previous_context, _style, lines_ok[segment_id] = self._write_segment(ai, job, project, segment, previous_context)
+
+            if config.get("fix_sentences", True):
+                self._job_update(job_id, status="running", stage="fixing sentences", progress=50)
+                try:
+                    self._fix_sentences(job_id)
+                except TaskBusy:
+                    self._warn(job_id, "Sentence fix skipped: it was already running for this job")
+
+            # Finish pass, on the mended text: the context the voice hears is rebuilt the same way.
+            voicing = config.get("voice_stage", self.config.voice_stage)
+            previous_context = ""
+            previous_style: dict | None = None
+            for position, segment_id in enumerate(segment_ids):
+                segment = self.db.one("SELECT kind, transcript_si FROM segments WHERE id=?", (segment_id,))
+                assert segment
+                if segment["kind"] == "original":
+                    previous_context += f"\n[Recording plays: {(segment['transcript_si'] or '')[:200]}]"
+                    continue
+                stage = "voicing" if voicing else "checking"
+                self._job_update(job_id, status="running", stage=f"{stage} {position + 1}/{total}", progress=52 + round(38 * position / max(total, 1)))
+                previous_context, previous_style = self._finish_segment(
+                    ai, job, project, segment_id, profile, previous_context, previous_style, persona, speed, lines_ok[segment_id],
                 )
+
+            if config.get("check_facts", True):
+                self._job_update(job_id, status="running", stage="checking facts", progress=90)
+                try:
+                    self._check_facts(job_id)
+                except TaskBusy:
+                    self._warn(job_id, "Fact check skipped: it was already running for this job")
 
             failed = self.db.one("SELECT COUNT(*) AS count FROM segments WHERE job_id=? AND qa_status!='passed'", (job_id,))["count"]
             if config.get("human_review_gate", True) or failed:

@@ -97,6 +97,36 @@ def test_list_films_finds_folders_with_a_storyboard(tmp_path):
     assert [f["film"] for f in films] == ["one"] and films[0]["shots"] == 6
 
 
+def test_a_film_being_prepared_is_listed_and_its_pictures_and_clips_can_be_watched(tmp_path):
+    import os
+    d = tmp_path / "early"
+    (d / "logs").mkdir(parents=True)
+    (d / "library").mkdir()
+    (d / "pipeline.json").write_text(json.dumps({"done": ["align", "sentences", "case"]}))
+    os.utime(d / "pipeline.json", (1000, 1000))
+    (d / "logs" / "harvest.log").write_text("$ harvest.py early\ncase: 41 files\n")
+    assert [(f["film"], f["shots"], f["preparing"]) for f in review.list_films(tmp_path)] == [("early", 0, "harvest")]
+    with pytest.raises(review.FilmError):
+        review.film_dir(tmp_path, "early")
+    assert review.film_dir(tmp_path, "early", preparing=True) == d
+    (d / "library" / "c1.jpg").write_bytes(b"jpg")
+    g = review.gathered(d)
+    assert [s["state"] for s in g["stages"][:5]] == ["done", "done", "done", "running", "waiting"]
+    assert g["stages"][3]["last"] == "case: 41 files"
+    assert [(p["id"], p["new"]) for p in g["pictures"]] == [("c1", True)] and g["clips"] == []
+
+
+def test_gathered_counts_the_shots_using_each_picture_and_clip_segment(tmp_path):
+    d = make_film(tmp_path)
+    g = review.gathered(d)
+    used = {x["id"]: x["used"] for x in g["pictures"] + g["clips"]}
+    assert used == {"c1": 1, "c2": 1, "c3": 1, "bad": 0, "v1#0": 0, "v1#1": 1}
+    assert not any(x["new"] for x in g["pictures"]) and g["storyboard"]
+    assert next(x for x in g["pictures"] if x["id"] == "bad")["graphic"]
+    assert [(x["file"], x["used"], x["caption"]) for x in g["illustrations"]] == [
+        ("assets/generated/detail_a.png", 1, "a cash register at dusk")]
+
+
 def test_film_dir_refuses_unknown_and_escaping_names(tmp_path):
     make_film(tmp_path)
     assert review.film_dir(tmp_path, "demo") == tmp_path / "demo"

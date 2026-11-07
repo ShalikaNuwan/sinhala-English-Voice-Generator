@@ -66,13 +66,14 @@ GRADES: dict[str, dict[str, str]] = {
     },
 }
 
+# Gentle: the owner found the earlier, stronger corners (PI/7 to PI/5) too dark (2026-11-01).
 VIGNETTES = {
-    "investigation": "vignette=angle=PI/7:eval=init",
-    "warm_memory": "vignette=angle=PI/8:eval=init",
-    "cold_dread": "vignette=angle=PI/5.5:eval=init",
-    "revelation": "vignette=angle=PI/5:eval=init",
-    "courtroom": "vignette=angle=PI/7:eval=init",
-    "memorial": "vignette=angle=PI/9:eval=init",
+    "investigation": "vignette=angle=PI/9:eval=init",
+    "warm_memory": "vignette=angle=PI/10:eval=init",
+    "cold_dread": "vignette=angle=PI/7.5:eval=init",
+    "revelation": "vignette=angle=PI/7:eval=init",
+    "courtroom": "vignette=angle=PI/9:eval=init",
+    "memorial": "vignette=angle=PI/11:eval=init",
 }
 
 EFFECTS = ("flash", "shake", "flicker")

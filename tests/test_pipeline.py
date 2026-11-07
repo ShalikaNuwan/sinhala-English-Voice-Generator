@@ -9,8 +9,10 @@ import pytest
 
 from app.config import Settings
 from app.database import Database, utc_now
+from app.fact_check import Fact, FactReport, Source
 from app.pipeline import Pipeline
 from app.schemas import FaithfulTranslation, NarrationAdaptation, QAEvaluation
+from app.sentences import SplitDecision
 
 
 SINHALA = "ඇය කියනවා කවුරුහරි එනවා කියලා."
@@ -66,6 +68,12 @@ class FakeAI:
 
     def word_timestamps(self, _audio_path, _model):
         return []
+
+    def split_sentence(self, *_args, **_kwargs):
+        return SplitDecision()
+
+    def check_facts(self, *_args, **_kwargs):
+        return FactReport(facts=[]), set()
 
 
 def create_source(path: Path, seconds: float = 1.0) -> None:
@@ -1615,3 +1623,280 @@ def test_regenerating_a_text_only_segment_never_synthesizes(tmp_path):
 
     pipeline.regenerate_segment(first["id"], "adaptation")
     assert len(ai.adapt_calls) == adaptations + 1 and ai.synthesis_calls == []
+
+
+# --- sentence fix and fact check stages ----------------------------------------------------------------
+
+
+class SplitFakeAI(ProfilingFakeAI):
+    """Two narration segments whose cut falls inside "He drove home and parked the car."; logs the stage order."""
+
+    TEXTS = ["He drove home and", "parked the car. Then he slept."]
+
+    def __init__(self, decision: SplitDecision | None = None):
+        super().__init__()
+        self.decision = decision if decision is not None else SplitDecision(
+            narration_direction="back", fragment_narration="parked the car.",
+            faithful_direction="back", fragment_faithful="parked the car.",
+        )
+        self.log: list[str] = []
+        self.split_calls: list[tuple] = []
+        self.evaluate_calls: list[tuple] = []
+        self.translations = 0
+        self.adaptations = 0
+
+    def translate(self, *_args, **_kwargs):
+        self.translations += 1
+        return FaithfulTranslation(english_faithful=self.TEXTS[(self.translations - 1) % 2])
+
+    def adapt(self, faithful_en, model, narrator_profile, previous_narration="", runs=None):
+        from app.schemas import ScriptLine
+        self.log.append("adapt")
+        self.adapt_calls.append({"faithful": faithful_en, "previous_narration": previous_narration, "runs": runs})
+        lines = [ScriptLine(text=faithful_en, runs=[1])] if runs else []
+        return NarrationAdaptation(narration_text=faithful_en, lines=lines, beat="build", emotion="calm")
+
+    def split_sentence(self, a_narration, a_faithful, b_narration, b_faithful, model):
+        self.log.append("split")
+        self.split_calls.append((a_narration, a_faithful, b_narration, b_faithful, model))
+        return self.decision
+
+    def synthesize(self, text, *args, **kwargs):
+        self.log.append("tts")
+        super().synthesize(text, *args, **kwargs)
+
+    def evaluate(self, faithful_en, narration_en, model):
+        self.log.append("qa")
+        self.evaluate_calls.append((faithful_en, narration_en))
+        return QAEvaluation(passed=True)
+
+
+def watch_facts(pipeline, ai=None) -> list[str | None]:
+    """Stand in for the fact checker: note each run (and its segment) in the AI's stage log."""
+    runs: list[str | None] = []
+
+    def run(job_id, segment_id, on_progress):
+        runs.append(segment_id)
+        if ai is not None:
+            ai.log.append("facts")
+        on_progress(1, 1)
+
+    pipeline._run_fact_check = run
+    return runs
+
+
+def test_sentences_are_fixed_after_every_text_pass_and_before_voicing_and_qa_and_facts_come_last(tmp_path):
+    ai = SplitFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai, seconds=65)
+    watch_facts(pipeline, ai)
+    job_id = start_job(db, project_id)
+
+    pipeline.process_job(job_id)
+
+    assert ai.log == ["adapt", "adapt", "split", "tts", "qa", "tts", "qa", "facts"]
+    assert db.one("SELECT status FROM jobs WHERE id=?", (job_id,))["status"] == "awaiting_review"
+
+
+def test_the_fixed_text_is_what_gets_voiced_and_checked(tmp_path):
+    ai = SplitFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai, seconds=65)
+    job_id = start_job(db, project_id)
+
+    pipeline.process_job(job_id)
+
+    first, second = db.all("SELECT * FROM segments WHERE job_id=? ORDER BY segment_index", (job_id,))
+    assert [call["text"] for call in ai.synthesis_calls] == ["He drove home and parked the car.", "Then he slept."]
+    assert ai.evaluate_calls == [
+        ("He drove home and parked the car.", "He drove home and parked the car."),
+        ("Then he slept.", "Then he slept."),
+    ]
+    assert first["narration_en"] == "He drove home and parked the car." and first["lines"][0]["text"] == first["narration_en"]
+    assert first["sentence_fix"]["notes"] == ["End of sentence moved in from segment 2 (narration and faithful)"]
+    # Fixed before voicing, so nothing was voiced from the old text and nothing waits for a re-voice.
+    assert not any("sentence fix" in issue for segment in (first, second) for issue in segment["qa"]["issues"])
+    assert ai.split_calls[0][:4] == ("He drove home and", "He drove home and", "parked the car. Then he slept.", "parked the car. Then he slept.")
+    # Today's text model decides, not the one recorded on the job.
+    assert ai.split_calls[0][4] == pipeline.config.text_model
+    assert db.one("SELECT COUNT(*) AS n FROM model_calls WHERE job_id=? AND stage='sentence_fix'", (job_id,))["n"] == 1
+    # The voice keeps its continuity: segment 2 hears segment 1's style.
+    assert ai.synthesis_calls[1]["previous_style"] == first["style"]
+
+
+def test_a_text_only_job_checks_the_fixed_text(tmp_path):
+    ai = SplitFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai, seconds=65)
+    job_id = start_job(db, project_id, voice_stage=False)
+
+    pipeline.process_job(job_id)
+
+    assert ai.synthesis_calls == []
+    assert ai.evaluate_calls[1] == ("Then he slept.", "Then he slept.")
+
+
+def test_the_job_config_can_switch_both_stages_off(tmp_path):
+    ai = SplitFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai, seconds=65)
+    runs = watch_facts(pipeline)
+    job_id = start_job(db, project_id)
+    config = db.one("SELECT config_json FROM jobs WHERE id=?", (job_id,))["config"]
+    db.execute("UPDATE jobs SET config_json=? WHERE id=?", (json.dumps(config | {"fix_sentences": False, "check_facts": False}), job_id))
+
+    pipeline.process_job(job_id)
+
+    assert ai.split_calls == [] and runs == []
+    assert [call["text"] for call in ai.synthesis_calls] == SplitFakeAI.TEXTS
+    assert pipeline.task_status(job_id) == {"sentences": None, "facts": None}
+
+
+def test_the_stages_report_through_the_task_tracker(tmp_path):
+    ai = SplitFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai, seconds=65)
+    watch_facts(pipeline)
+    job_id = start_job(db, project_id)
+
+    pipeline.process_job(job_id)
+
+    status = pipeline.task_status(job_id)
+    assert status["sentences"] == {"state": "done", "done": 1, "total": 1, "error": "", "changed": [1, 2]}
+    assert status["facts"] == {"state": "done", "done": 1, "total": 1, "error": ""}
+
+
+def test_a_failed_fact_check_is_a_warning_and_the_job_still_reaches_review(tmp_path):
+    ai = SplitFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai, seconds=65)
+
+    def broken(job_id, segment_id, on_progress):
+        raise RuntimeError("search unavailable")
+
+    pipeline._run_fact_check = broken
+    job_id = start_job(db, project_id)
+
+    pipeline.process_job(job_id)
+
+    job = db.one("SELECT * FROM jobs WHERE id=?", (job_id,))
+    assert job["status"] == "awaiting_review"
+    assert any("Fact check failed: search unavailable" in warning for warning in job["warnings"])
+    assert pipeline.task_status(job_id)["facts"]["state"] == "failed"
+    assert pipeline.task_status(job_id)["facts"]["error"] == "search unavailable"
+
+
+def test_a_refused_move_is_a_job_warning_and_changes_nothing(tmp_path):
+    ai = SplitFakeAI(SplitDecision(narration_direction="back", fragment_narration="parked a car."))
+    pipeline, db, project_id = build_project(tmp_path, ai, seconds=65)
+    job_id = start_job(db, project_id)
+
+    pipeline.process_job(job_id)
+
+    job = db.one("SELECT * FROM jobs WHERE id=?", (job_id,))
+    assert any("Sentence fix refused between segments 1 and 2" in warning for warning in job["warnings"])
+    assert [call["text"] for call in ai.synthesis_calls] == SplitFakeAI.TEXTS
+
+
+def test_no_sentence_is_mended_across_a_recording(tmp_path):
+    ai = RecordingFakeAI()
+    calls = []
+    ai.split_sentence = lambda *args: calls.append(args) or SplitDecision()
+    run_recording_job(tmp_path, ai)
+
+    # Narration, recording, narration, narration: only the last two meet at a cut.
+    assert len(calls) == 1
+
+
+def test_the_fix_button_mends_a_voiced_job_and_sends_changed_voices_to_review(tmp_path):
+    ai = SplitFakeAI(SplitDecision())
+    pipeline, db, project_id = build_project(tmp_path, ai, seconds=65)
+    job_id = start_job(db, project_id)
+    pipeline.process_job(job_id)
+    ai.decision = SplitDecision(narration_direction="back", fragment_narration="parked the car.")
+
+    pipeline.start_fix_sentences(job_id).join(timeout=10)
+
+    first, second = db.all("SELECT * FROM segments WHERE job_id=? ORDER BY segment_index", (job_id,))
+    assert first["narration_en"] == "He drove home and parked the car."
+    assert first["faithful_en"] == "He drove home and"
+    assert first["qa_status"] == "needs_review" and second["qa_status"] == "needs_review"
+    assert "Text changed by the sentence fix; regenerate the voice" in first["qa"]["issues"]
+    assert pipeline.task_status(job_id)["sentences"]["changed"] == [1, 2]
+
+
+def test_a_task_cannot_start_twice_for_the_same_job(tmp_path):
+    import threading
+
+    from app.pipeline import TaskBusy
+
+    ai = SplitFakeAI(SplitDecision())
+    pipeline, db, project_id = build_project(tmp_path, ai)
+    job_id = start_job(db, project_id)
+    release, started, runs = threading.Event(), threading.Event(), []
+
+    def slow(job, segment_id, on_progress):
+        runs.append(segment_id)
+        on_progress(0, 3)
+        started.set()
+        release.wait(timeout=10)
+
+    pipeline._run_fact_check = slow
+    thread = pipeline.start_check_facts(job_id, "segment-7")
+    started.wait(timeout=10)
+
+    assert pipeline.task_status(job_id)["facts"] == {"state": "running", "done": 0, "total": 3, "error": ""}
+    with pytest.raises(TaskBusy):
+        pipeline.start_check_facts(job_id)
+    pipeline.start_fix_sentences(job_id).join(timeout=10)  # a different task runs alongside
+    release.set()
+    thread.join(timeout=10)
+
+    assert runs == ["segment-7"]
+    assert pipeline.task_status(job_id)["facts"]["state"] == "done"
+    pipeline.start_check_facts(job_id).join(timeout=10)  # and it can run again once finished
+    assert runs == ["segment-7", None]
+
+
+
+class FactFakeAI(SplitFakeAI):
+    """Finds one wrong fact in each segment, with a link the search returned."""
+
+    def __init__(self):
+        super().__init__()
+        self.fact_calls: list[tuple] = []
+
+    def check_facts(self, text, context, topic, model):
+        self.fact_calls.append((text, context, topic, model))
+        url = "https://example.org/case"
+        fact = Fact(claim=text, verdict="wrong", evidence="The record says otherwise.", sources=[Source(url=url, title="Case file")])
+        return FactReport(facts=[fact]), {url}
+
+
+def test_the_fact_check_stage_stores_each_segments_facts_and_never_changes_the_text(tmp_path):
+    ai = FactFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai, seconds=65)
+    job_id = start_job(db, project_id)
+
+    pipeline.process_job(job_id)
+
+    segments = db.all("SELECT * FROM segments WHERE job_id=? ORDER BY segment_index", (job_id,))
+    narrated = [s for s in segments if s["kind"] == "narration" and s["narration_en"]]
+    assert narrated and len(ai.fact_calls) == len(narrated)
+    for segment in narrated:
+        facts = segment["facts"]
+        assert facts["state"] == "done" and facts["checked_text"] == segment["narration_en"]
+        assert facts["items"][0]["verdict"] == "wrong"
+        assert facts["items"][0]["sources"] == [{"url": "https://example.org/case", "title": "Case file"}]
+    # The checker is given the project's topic and today's text model, not the one that wrote an old job.
+    project = db.one("SELECT topic FROM projects WHERE id=?", (project_id,))
+    assert {(call[2], call[3]) for call in ai.fact_calls} == {(project["topic"], pipeline.config.text_model)}
+    assert pipeline.task_status(job_id)["facts"]["state"] == "done"
+
+
+def test_checking_one_segment_again_checks_only_that_segment(tmp_path):
+    ai = FactFakeAI()
+    pipeline, db, project_id = build_project(tmp_path, ai, seconds=65)
+    job_id = start_job(db, project_id)
+    pipeline.process_job(job_id)
+    first = db.all("SELECT id FROM segments WHERE job_id=? AND kind='narration' ORDER BY segment_index", (job_id,))[0]["id"]
+    ai.fact_calls.clear()
+
+    pipeline.start_check_facts(job_id, first).join(timeout=10)
+
+    assert len(ai.fact_calls) == 1
+    assert pipeline.task_status(job_id)["facts"] == {"state": "done", "done": 1, "total": 1, "error": ""}

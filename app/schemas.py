@@ -37,6 +37,11 @@ class TextUpdate(BaseModel):
     text: str = Field(min_length=1)
 
 
+class FactResolve(BaseModel):
+    claim: str
+    resolved: bool = True
+
+
 class RegenerateRequest(BaseModel):
     stage: Literal["translation", "adaptation", "tts", "qa"] = "tts"
 

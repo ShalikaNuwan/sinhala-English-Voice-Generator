@@ -23,6 +23,7 @@
   const FILTERS = [["all", "All"], ["not-actual", "Not actual only"], ["illustration", "Illustration"], ["stand-in", "Stand-in"],
                    ["graphic", "Graphic"], ["not-approved", "Not approved"], ["has-review", "Has a review"]];
   const POLL_MS = 3000;
+  const IDLE_POLL_MS = 10000;   // nothing regenerating: still look now and then for shots changed outside the page
   const WORKING = new Set(["queued", "running"]);
 
   let film = null;            // the open film's name, or null on the films list
@@ -35,6 +36,11 @@
   let source = null;          // what the player plays: "final" or "review"
   let playerKey = "";         // the src currently loaded, so a refresh never restarts playback
   let finalStamp = 0;         // bumped when a render finishes, so a re-rendered final film reloads
+  let gatherFilm = null;      // the film whose gathered pictures and clips are shown, or null
+  let gatherTimer = null;     // asks for them again while the engine is still preparing the film
+  let gatherTab = "pictures"; // "pictures", "clips" or "illustrations"
+  let gatherShow = "all";     // "all", "used" or "unused"
+  let gathered = null;        // GET /api/video/films/{film}/gathered
   const drafts = new Map();   // shot n -> review text typed but not sent yet (survives row redraws)
   const sigs = new WeakMap(); // row element -> the data it was drawn from
 
@@ -57,6 +63,7 @@
   function stopPolling() {
     clearTimeout(jobTimer); jobTimer = null;
     clearTimeout(regenTimer); regenTimer = null;
+    clearTimeout(gatherTimer); gatherTimer = null;
   }
 
   function unloadPlayer() {
@@ -76,6 +83,7 @@
     $("video-tab").classList.toggle("hidden", !video);
     if (!video) { stopPolling(); $("player").pause(); $("scenes").querySelectorAll("video").forEach((v) => v.pause()); return; }
     if (film) refresh().catch((error) => showError(error.message));    // picks the polling back up
+    else if (gatherFilm) refreshGather();
     else loadFilms();
   }));
 
@@ -83,12 +91,19 @@
   async function loadFilms() {
     try {
       const { films } = await api("/api/video/films");
-      $("films").innerHTML = films.length ? films.map((f) => `
+      $("films").innerHTML = films.length ? films.map((f) => f.shots ? `
         <div class="film-row" data-open="${esc(f.film)}">
           <strong>${esc(f.film)}</strong>
           <span class="muted">${esc(f.shots)} shots · ${esc(f.minutes)} min · ${esc(f.reviewed)} of ${esc(f.shots)} reviewed${f.not_ok ? `, ${esc(f.not_ok)} not OK` : ""}</span>
-          <span class="pill">${f.final ? "final film ready" : f.animatic ? "review cut ready" : "no review cut yet"}</span>
+          <span class="pill">${f.preparing ? `preparing: ${esc(f.preparing)}` : f.final ? "final film ready" : f.animatic ? "review cut ready" : "no review cut yet"}</span>
+          <button class="secondary" data-gather="${esc(f.film)}">Pictures &amp; clips</button>
           <button data-open="${esc(f.film)}">Open</button>
+        </div>` : `
+        <div class="film-row" data-gather="${esc(f.film)}">
+          <strong>${esc(f.film)}</strong>
+          <span class="muted">Being prepared: no storyboard yet</span>
+          <span class="pill">${f.preparing ? `now: ${esc(f.preparing)}` : "stopped"}</span>
+          <button data-gather="${esc(f.film)}">Watch pictures &amp; clips</button>
         </div>`).join("") : `<p class="muted">No films yet. Prepare one with <code>documentary.py prepare</code>.</p>`;
     } catch (error) {
       $("films").innerHTML = `<p class="error">${esc(error.message)}</p>`;
@@ -96,6 +111,8 @@
   }
 
   $("films").addEventListener("click", (e) => {
+    const gather = e.target.closest("[data-gather]");
+    if (gather && (gather.tagName === "BUTTON" || !e.target.closest("[data-open]"))) { openGather(gather.dataset.gather); return; }
     const row = e.target.closest("[data-open]");
     if (row) openFilm(row.dataset.open);
   });
@@ -224,10 +241,13 @@
     return "";
   }
 
-  /** The regenerated shot plays in place of the frame until the review cut is rebuilt with it. */
+  /** The shot as it plays in the review cut (its frame as the poster; only its own seconds play), or the
+      regenerated shot in its place until the review cut is rebuilt with it. */
   function frameHtml(shot) {
     if (shot.frame_current) {
-      return `<img loading="lazy" src="${esc(`${base()}/frame/${enc(shot.n)}.jpg?v=${view.animatic_version}`)}" alt="Frame in the review cut">`;
+      const poster = `${base()}/frame/${enc(shot.n)}.jpg?v=${view.animatic_version}`;
+      const src = `${fileUrl("animatic.mp4")}?v=${view.animatic_version}#t=${Number(shot.start).toFixed(2)},${Number(shot.end).toFixed(2)}`;
+      return `<video class="regen-clip" controls preload="none" poster="${esc(poster)}" src="${esc(src)}" data-start="${Number(shot.start)}" data-end="${Number(shot.end)}"></video>`;
     }
     // A clip made before the shot's current picture was chosen (Choose another… afterwards) is out of date.
     if (shot.regen?.state === "done" && shot.regen.clip && !(shot.owner && shot.owner.at > shot.regen.at)) {
@@ -235,6 +255,25 @@
     }
     return `<div class="placeholder">${view.animatic ? "Changed: rebuild the review cut to see this frame" : "No review cut yet"}</div>`;
   }
+
+  /** The browser keeps to a "#t=start,end" only on the first play: hold every shot's player to its own seconds
+      (a replay or a scrub past either end goes back to the shot's start). Media events don't bubble, so capture. */
+  function keepToShot(e) {
+    const v = e.target;
+    if (!(v instanceof HTMLVideoElement) || !v.dataset.end) return;
+    const start = Number(v.dataset.start), end = Number(v.dataset.end);
+    if (e.type === "play" && (v.currentTime < start - 0.05 || v.currentTime >= end - 0.05)) v.currentTime = start;
+    if (e.type === "play") {
+      const watch = () => {
+        if (v.paused) return;
+        if (v.currentTime >= end) { v.pause(); v.currentTime = start; return; }
+        requestAnimationFrame(watch);
+      };
+      requestAnimationFrame(watch);
+    }
+    if (e.type === "seeked" && (v.currentTime < start - 0.05 || v.currentTime > end)) v.currentTime = start;
+  }
+  ["play", "seeked"].forEach((t) => document.addEventListener(t, keepToShot, true));
 
   function statusHtml(shot) {
     const r = shot.regen;
@@ -366,19 +405,20 @@
     syncChildren(box, wanted);
   }
 
-  /** While shots regenerate (or a changed row waits for the owner to stop typing), ask for the film again. */
+  /** Ask for the film again: often while shots regenerate (or a changed row waits for the owner to stop typing),
+      otherwise every IDLE_POLL_MS, so shots changed outside the page (another tab, a script) show without a reload. */
   function pollRegen() {
     clearTimeout(regenTimer); regenTimer = null;
     if (!view) return;
     const busy = view.summary.regenerating ?? allShots().filter(working).length;
-    if (!busy && !staleRows) return;
     const name = film;
     regenTimer = setTimeout(async () => {
       regenTimer = null;
       if (film !== name || $("video-tab").classList.contains("hidden")) return;
+      if (document.hidden) { pollRegen(); return; }                                    // a background tab waits
       try { await refresh(); }
       catch (error) { showError(error.message); if (film === name) pollRegen(); }   // a hiccup; keep watching
-    }, POLL_MS);
+    }, busy || staleRows ? POLL_MS : IDLE_POLL_MS);
   }
 
   async function saveMark(n, status) {
@@ -467,13 +507,133 @@
         <button data-choose="${esc(o.id)}">Use this</button>
       </div>`).join("");
     const draw = alt.illustration.allowed
-      ? `<div class="option"><div class="placeholder">New illustration</div><span class="muted">An object or setting matching the words (never a person or a named place), labelled ILLUSTRATION.</span><button data-choose="illustration">Draw one</button></div>`
+      ? `<div class="option"><div class="placeholder">New illustration</div><span class="muted">An object or setting matching the words (never a person or a named place)${alt.illustration.tagged === false ? "" : ", labelled ILLUSTRATION"}.</span><button data-choose="illustration">Draw one</button></div>`
       : `<p class="muted">${esc(alt.illustration.why)}</p>`;
     box.innerHTML = (options || `<p class="muted">No other pictures were found for this shot.</p>`) + draw;
   }
 
   // A picture that cannot be loaded (a card not drawn yet, a frame ffmpeg could not grab) is hidden.
   $("scenes").addEventListener("error", (e) => {
+    if (e.target.tagName === "IMG") e.target.classList.add("hidden");
+  }, true);
+
+  /* ------------------------------------------------- pictures and clips */
+  const GATHER_MS = 8000;
+  const gatherFile = (path) => `${base(gatherFilm)}/file/${String(path).split("/").map(enc).join("/")}`;
+  const gatherSigs = new Map();   // item id -> [element, the data it was drawn from]
+
+  async function openGather(name) {
+    stopPolling();
+    gatherFilm = name; gathered = null; gatherTab = "pictures"; gatherShow = "all";
+    gatherSigs.clear();
+    $("gather-grid").innerHTML = `<p class="muted">Loading…</p>`;
+    $("gather-error").hidden = true;
+    $("films-card").classList.add("hidden");
+    $("gather-card").classList.remove("hidden");
+    await refreshGather();
+  }
+
+  $("gather-close").addEventListener("click", () => {
+    stopPolling();
+    gatherFilm = null; gathered = null;
+    $("gather-grid").innerHTML = "";               // also stops a clip that is playing
+    gatherSigs.clear();
+    $("gather-card").classList.add("hidden");
+    $("films-card").classList.remove("hidden");
+    loadFilms();
+  });
+
+  async function refreshGather() {
+    clearTimeout(gatherTimer); gatherTimer = null;
+    const name = gatherFilm;
+    if (!name) return;
+    try {
+      const next = await api(`${base(name)}/gathered`);
+      if (gatherFilm !== name) return;
+      gathered = next;
+      $("gather-error").hidden = true;
+      renderGather();
+    } catch (error) {
+      $("gather-error").textContent = error.message;
+      $("gather-error").hidden = false;
+    }
+    // Keep watching while the engine is still at work (and the owner is on this tab).
+    const preparing = !gathered || gathered.stages.some((s) => s.state !== "done");
+    if (preparing && gatherFilm === name && !$("video-tab").classList.contains("hidden")) {
+      gatherTimer = setTimeout(refreshGather, GATHER_MS);
+    }
+  }
+
+  function renderGather() {
+    const g = gathered;
+    $("gather-title").textContent = g.film;
+    $("gather-stages").innerHTML = g.stages.map((s) => `<span class="stage stage-${esc(s.state)}">${s.state === "done" ? "✓ " : ""}${esc(s.stage)}</span>`).join("");
+    const running = g.stages.find((s) => s.state === "running");
+    const left = g.stages.filter((s) => s.state !== "done").length;
+    $("gather-note").textContent = running
+      ? `Now: ${running.stage} — ${running.last || "starting"}`
+      : left ? "Preparation is not running." : g.storyboard ? "Prepared. “Used” counts the storyboard's shots." : "";
+    const list = gatherTab === "clips" ? g.clips : gatherTab === "illustrations" ? g.illustrations : g.pictures;
+    const shown = list.filter((x) => gatherShow === "all" || (gatherShow === "used" ? x.used : !x.used));
+    $("gather-tabs").innerHTML = [["pictures", `Pictures (${g.pictures.length})`], ["clips", `Clips (${g.clips.length})`],
+                                  ["illustrations", `AI pictures (${g.illustrations.length})`]]
+      .map(([key, text]) => `<button class="${key === gatherTab ? "" : "secondary"}" data-gtab="${key}">${esc(text)}</button>`).join("")
+      + (g.storyboard ? [["all", "All"], ["used", "Used in the film"], ["unused", "Not used"]]
+        .map(([key, text]) => `<button class="${key === gatherShow ? "" : "secondary"}" data-gshow="${key}">${text}</button>`).join("") : "");
+    const grid = $("gather-grid");
+    const wanted = shown.map((x) => {
+      const sig = JSON.stringify(x);
+      const old = gatherSigs.get(x.id);
+      if (old && (old[1] === sig || (old[0].querySelector("video") && !old[0].querySelector("video").paused))) return old[0];
+      const t = document.createElement("template");
+      t.innerHTML = gatherHtml(x).trim();
+      const el = t.content.firstElementChild;
+      gatherSigs.set(x.id, [el, sig]);
+      return el;
+    });
+    if (!wanted.length) {
+      const none = Object.assign(document.createElement("p"), { className: "muted" });
+      none.textContent = list.length ? "Nothing matches." : gatherTab === "clips" ? "No clips yet: they come in the footage stage."
+        : gatherTab === "illustrations" ? "No AI pictures yet: they are drawn in the ladder stage, for shots no real picture covers."
+        : "No pictures yet: they arrive while the harvest downloads.";
+      wanted.push(none);
+    }
+    syncChildren(grid, wanted);
+  }
+
+  // AI pictures are placed on their shots only when the ladder stage finishes: until then none counts as unused.
+  const drawing = () => gathered.stages.some((s) => s.stage === "ladder" && s.state !== "done");
+
+  function gatherHtml(x) {
+    const clip = gatherTab === "clips";
+    const media = clip
+      ? `<video controls preload="none" poster="${esc(`${base(gatherFilm)}/thumb/${enc(x.id)}.jpg`)}" src="${esc(`${gatherFile(x.file)}#t=${x.in},${x.out}`)}"></video>`
+      : `<a href="${esc(gatherFile(x.file))}" target="_blank" rel="noopener"><img loading="lazy" src="${esc(gatherFile(x.file))}" alt=""></a>`;
+    const badge = x.new ? `<span class="badge badge-new">New</span>`
+      : x.used ? `<span class="badge badge-used">Used in ${esc(x.used)} shot${x.used === 1 ? "" : "s"}</span>`
+      : gathered.storyboard && !(clip === false && gatherTab === "illustrations" && drawing()) ? `<span class="badge badge-unused">Not used</span>` : "";
+    const link = safeLink(x.source_url);
+    const where = [clip ? `${clock(x.in)}–${clock(x.out)} of “${x.title}”` : x.found, x.era, x.licence].filter(Boolean).map(esc).join(" · ");
+    return `
+      <div class="gitem ${x.used ? "gitem-used" : ""}">
+        ${media}
+        <div>${badge} ${x.graphic ? `<span class="badge badge-missing">Never shown: graphic</span>` : ""}</div>
+        <div>${x.caption ? esc(x.caption) : `<span class="muted">${x.new ? "Downloaded; described in the caption stage." : gatherTab === "illustrations" ? "Drawn; its shot is filled in when the stage finishes." : "No description yet."}</span>`}</div>
+        <div class="muted">${where}${link ? ` <a href="${esc(link)}" target="_blank" rel="noopener">source</a>` : ""}</div>
+      </div>`;
+  }
+
+  $("gather-tabs").addEventListener("click", (e) => {
+    const b = e.target.closest("button");
+    if (!b || !gathered) return;
+    if (b.dataset.gtab) gatherTab = b.dataset.gtab;
+    if (b.dataset.gshow) gatherShow = b.dataset.gshow;
+    $("gather-grid").innerHTML = "";
+    gatherSigs.clear();
+    renderGather();
+  });
+
+  $("gather-grid").addEventListener("error", (e) => {
     if (e.target.tagName === "IMG") e.target.classList.add("hidden");
   }, true);
 

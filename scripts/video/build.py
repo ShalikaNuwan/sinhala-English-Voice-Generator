@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -25,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import assemble  # noqa: E402
+import explainer  # noqa: E402
 import graphics  # noqa: E402
 import investigation  # noqa: E402
 import motion  # noqa: E402
@@ -66,6 +68,26 @@ def draw(shots: list[dict], video_dir: Path, width: int, height: int) -> int:
     return drawn
 
 
+def _plain(word: str) -> str:
+    return re.sub(r"[^a-z]", "", re.sub(r"['’]s$", "", word.lower()))
+
+
+def cue_name_cards(shots: list[dict], words: list[dict]) -> None:
+    """A name card comes up as its name is first said in its shot: `in_at`, in seconds into the shot.
+    A name never said in its shot leaves the card up from the start."""
+    for shot in shots:
+        card = shot.get("overlay")
+        if not card or card.get("style") != "name":
+            continue
+        names = {_plain(w) for w in str(card.get("text", "")).split()} - {""}
+        said = next((w["start"] for w in words
+                     if shot["start"] <= w["start"] < shot["end"] and _plain(w["word"]) in names), None)
+        if said is None:
+            card.pop("in_at", None)
+        else:
+            card["in_at"] = round(said - shot["start"], 2)
+
+
 def _digest(value) -> str:
     import hashlib
     return hashlib.sha1(json.dumps(value, sort_keys=True, default=str).encode()).hexdigest()[:8]
@@ -75,7 +97,10 @@ def render_motion(shots: list[dict], video_dir: Path, library: dict[str, dict]) 
     """Render every board, map, profile, exhibit and highlight that is not already on disk.
 
     A highlight whose detail the vision check cannot confirm runs as a plain photograph of its
-    subject instead: an unconfirmed circle would point the viewer at the wrong thing.
+    subject instead: an unconfirmed circle would point the viewer at the wrong thing. A reveal board
+    (`board`: its prints, subject and timings, in film seconds) can run under several shots in a row:
+    it is rendered once, each shot playing its own stretch of it, and every print on it is credited.
+    An explainer (`explainer`: a spec file under the film folder, see explainer.py) runs the same way.
     """
     folder = video_dir / "assets" / "motion"
     folder.mkdir(parents=True, exist_ok=True)
@@ -92,6 +117,34 @@ def render_motion(shots: list[dict], video_dir: Path, library: dict[str, dict]) 
             exhibit_number += 1
         params = {k: shot.get(k) for k in ("kind", "subject_id", "fields", "tag", "detail", "label", "pins", "links", "points")}
         out = folder / f"{shot['index']:04d}_{kind}_{_digest([params, seconds, exhibit_number])}.mp4"
+        board = shot.get("board") or {}
+        if kind == "reveal":
+            seconds = round(board["end"] - board["start"], 3)
+            out = folder / f"reveal_{_digest(board)}.mp4"
+            shot["clip_in"] = round(shot["start"] - board["start"], 3)
+            shot["credits"] = [{"asset": library[p["library_id"]]["file"], **{k: library[p["library_id"]].get(k) for k in
+                                ("rights", "licence", "attribution", "source_url")}}
+                               for p in board["pins"] + [board["subject"]]]
+        if kind == "callback":       # back to a reveal board, lighting up its victims one at a time
+            spec = json.loads((video_dir / shot["callback"]).read_text(encoding="utf-8"))
+            seconds = round(spec["end"] - spec["start"], 3)
+            out = folder / f"callback_{_digest(spec)}.mp4"
+            shot["clip_in"] = round(shot["start"] - spec["start"], 3)
+            ids = [p["library_id"] for p in spec["board"]["pins"]] + [spec["board"]["subject"]["library_id"]]
+            shot["credits"] = [{"asset": library[i]["file"], **{k: library[i].get(k) for k in
+                                ("rights", "licence", "attribution", "source_url")}} for i in ids if i in library]
+        if kind == "explainer":
+            spec = json.loads((video_dir / shot["explainer"]).read_text(encoding="utf-8"))
+            seconds = round(spec["end"] - spec["start"], 3)
+            out = folder / f"explainer_{_digest(spec)}.mp4"
+            shot["clip_in"] = round(shot["start"] - spec["start"], 3)
+            ids = [e["library_id"] for e in spec.get("elements") or [] if e.get("library_id") in library]
+            shot["credits"] = [{"asset": library[i]["file"], **{k: library[i].get(k) for k in
+                                ("rights", "licence", "attribution", "source_url")}} for i in dict.fromkeys(ids)]
+            if spec["base"]["kind"] == "map":
+                shot["credits"].append({"asset": "OpenStreetMap map data", "rights": "free", "licence": "ODbL",
+                                        "attribution": "© OpenStreetMap contributors",
+                                        "source_url": "https://www.openstreetmap.org/copyright"})
         try:
             if not out.exists():
                 if kind == "board":
@@ -99,6 +152,22 @@ def render_motion(shots: list[dict], video_dir: Path, library: dict[str, dict]) 
                              "sub": p.get("sub", "")} for p in shot.get("pins") or []]
                     links = [(l["a"], l["b"]) for l in shot.get("links") or []]
                     motion.evidence_board(pins, links, out, seconds)
+                elif kind == "callback":
+                    face = spec["board"]["subject"]
+                    motion.board_callback([dict(p, image=str(video_dir / library[p["library_id"]]["file"]))
+                                           for p in spec["board"]["pins"]],
+                                          dict(face, image=str(video_dir / library[face["library_id"]]["file"])),
+                                          out, seconds, spec["path"], spec["highlights"])
+                elif kind == "explainer":
+                    explainer.render(spec, video_dir, out, seconds)
+                elif kind == "reveal":
+                    face = board["subject"]
+                    motion.reveal_board([dict(p, image=str(video_dir / library[p["library_id"]]["file"]))
+                                         for p in board["pins"]],
+                                        dict(face, image=str(video_dir / library[face["library_id"]]["file"])),
+                                        out, seconds, reveal_at=board["reveal_at"] - board["start"],
+                                        zoom_out_at=board["zoom_out_at"] - board["start"],
+                                        strings_at=board["strings_at"] - board["start"])
                 elif kind == "map":
                     motion.map_reveal(shot.get("points") or [], out, seconds)
                 elif kind == "profile":
@@ -166,9 +235,9 @@ def credits(shots: list[dict]) -> str:
     """Every picture in the cut, once, grouped by how the owner may use it."""
     groups: dict[str, dict[str, dict]] = defaultdict(dict)
     for shot in shots:
-        if not shot.get("asset"):
-            continue
-        groups[shot.get("rights") or "free"].setdefault(shot["asset"], shot)
+        for entry in [shot] + list(shot.get("credits") or []):   # a reveal board credits each print on it
+            if entry.get("asset"):
+                groups[entry.get("rights") or "free"].setdefault(entry["asset"], entry)
     out = ["# Picture credits", ""]
     for key, heading in RIGHTS_HEADINGS:
         if not groups.get(key):
@@ -242,6 +311,8 @@ def main() -> None:
                        if s.get("asset")})
     merged.update({s["index"]: s for s in shots})
     plan["shots"] = [merged[i] for i in sorted(merged)]
+    if (video_dir / "words.json").exists():
+        cue_name_cards(plan["shots"], json.loads((video_dir / "words.json").read_text(encoding="utf-8")))
     sound_credits = ""
     if args.sound:
         import subprocess

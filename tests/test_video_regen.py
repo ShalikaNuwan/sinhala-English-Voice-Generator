@@ -93,7 +93,7 @@ def test_options_are_the_shots_own_pictures_first_then_the_scenes_then_the_rest(
         {"id": "c4", "file": "library/c4.jpg", "caption": "A courthouse.", "found_by": "entity:Court",
          "rights": "free", "licence": "CC0", "era": "1970s"},
         {"id": "c5", "file": "library/c5.jpg", "caption": "Not free.", "found_by": "case", "rights": "free",
-         "licence": "CC BY-SA 4.0"},
+         "licence": "CC BY-NC 2.0"},
         {"id": "c6", "file": "library/c6.jpg", "caption": "Excluded.", "found_by": "case", "rights": "free",
          "licence": "Public domain"}]
     (d / "library.json").write_text(json.dumps(lib))
@@ -137,6 +137,26 @@ def test_the_choose_prompt_states_the_rules_and_passes_the_review_verbatim(tmp_p
     assert "x" * 161 not in user
 
 
+def test_the_choice_is_told_what_the_shots_around_it_show_so_it_does_not_repeat_them(tmp_path):
+    d = film(tmp_path)
+    sb = review.load_storyboard(d)
+    for b in sb["beats"]:
+        b["detail"] = {1: "a late-1960s living room with one armchair", 3: "two armchairs turned apart"}.get(b["index"], "")
+    library = review.load_library(d)
+    nearby = regen.nearby_pictures(sb, 2, library)
+    assert nearby[0] == "1 shot before: a late-1960s living room with one armchair"
+    assert "1 shot after: two armchairs turned apart" in nearby
+    seen = []
+
+    def ask(system, user):
+        seen.append(user)
+        return Decision(action="keep", explanation=".")
+
+    beat = review.find_beat(sb, 2)
+    regen.decide("change it", beat, sb["scenes"][0], None, [], True, "", ask, nearby=nearby)
+    assert "Shots around this one show" in seen[0] and "two armchairs turned apart" in seen[0]
+
+
 def test_decide_refuses_an_id_not_offered_and_a_search_when_none_is_allowed(tmp_path):
     d = film(tmp_path)
     sb = review.load_storyboard(d)
@@ -176,7 +196,7 @@ def test_regen_json_walks_through_its_steps(tmp_path):
     f = Fakes(d, 1, Decision(action="search", queries=["1970s house", "", "a", "b", "c"], explanation=""),
               Decision(action="library", library_id="c9", explanation="Used c9"), new_ids=["c9"])
     f.run("show his house")
-    assert f.steps == [("ask", "running", "Choosing a picture…"), ("search", "running", "Searching the archives…"),
+    assert f.steps == [("ask", "running", "Choosing a picture…"), ("search", "running", "Searching the archives and the web…"),
                        ("ask", "running", "Choosing a picture…"), ("check", "running", "Checking…"),
                        ("render", "running", "Rendering the shot…")]
     assert f.searched == [["1970s house", "a", "b"]]            # empty phrases dropped, three at most
@@ -213,7 +233,8 @@ def test_footage_is_never_cropped(tmp_path):
 
 def test_an_illustration_is_drawn_from_the_decisions_detail(tmp_path):
     d = film(tmp_path)
-    f = Fakes(d, 2, Decision(action="illustration", detail="an empty 1970s road at night", explanation="Drew it"))
+    f = Fakes(d, 2, Decision(action="search", queries=["road at night"], explanation=""),
+              Decision(action="illustration", detail="an empty 1970s road at night", explanation="Drew it"))
     assert f.run("night, not day")["state"] == "done"
     beat = review.find_beat(review.load_storyboard(d), 2)
     assert beat["kind"] == "generated" and beat["detail"] == "an empty 1970s road at night"
@@ -222,18 +243,20 @@ def test_an_illustration_is_drawn_from_the_decisions_detail(tmp_path):
 
 def test_a_refused_drawing_gets_one_more_choice_told_why(tmp_path):
     d = film(tmp_path)
-    f = Fakes(d, 2, Decision(action="illustration", detail="a man waiting by a car", explanation="Drew him"),
+    f = Fakes(d, 2, Decision(action="search", queries=["man by a car"], explanation=""),
+              Decision(action="illustration", detail="a man waiting by a car", explanation="Drew him"),
               Decision(action="illustration", detail="an empty parked car at night", explanation="Drew the car"))
     done = f.run("show him waiting")
     assert done["state"] == "done" and done["explanation"] == "Drew the car"
-    assert "refused by the illustration rules: 'a man waiting by a car'" in f.asked[1][1]
-    assert "search is not available" in f.asked[1][1].lower()
+    assert "refused by the illustration rules: 'a man waiting by a car'" in f.asked[2][1]
+    assert "search is not available" in f.asked[2][1].lower()
 
 
 def test_two_refused_drawings_fail_and_leave_the_shot_as_it_was(tmp_path):
     d = film(tmp_path)
     before = files(d)
-    f = Fakes(d, 2, Decision(action="illustration", detail="a man waiting by a car", explanation="Drew him"),
+    f = Fakes(d, 2, Decision(action="search", queries=["man by a car"], explanation=""),
+              Decision(action="illustration", detail="a man waiting by a car", explanation="Drew him"),
               Decision(action="illustration", detail="a woman by a car", explanation="Drew her"))
     failed = f.run("show him waiting")
     assert failed["state"] == "failed" and "refused" in failed["error"] and failed["clip"] is None
@@ -383,12 +406,15 @@ def test_search_online_adds_the_needs_runs_the_harvest_and_captions_only_the_new
     def run_step(cmd, d, timeout):
         seen.append(cmd)
         if cmd[2].endswith("harvest.py"):
+            # Only this shot's searches are in the file while the harvest runs.
+            assert [x["query"] for x in json.loads((d / "library" / "needs.json").read_text())] == [
+                "1970s house", "1970s pharmacy counter"]
             lib = json.loads((d / "library.json").read_text())
             lib["items"].insert(0, {"id": "c7", "file": "library/c7.jpg", "found_by": "need:1970s house"})
             (d / "library.json").write_text(json.dumps(lib))
 
     monkeypatch.setattr(regen, "run_step", run_step)
-    new = regen.search_online(d, ["1970s house", "1970S PHARMACY COUNTER"])
+    new = regen.search_online(d, ["1970s house", "1970S PHARMACY COUNTER"], web=lambda q, about: [])
     assert new == ["c7"]
     needs = json.loads((d / "library" / "needs.json").read_text())
     assert needs == [{"query": "1970s house", "beats": []}, {"query": "1970s pharmacy counter", "beats": [5]}]
@@ -397,9 +423,208 @@ def test_search_online_adds_the_needs_runs_the_harvest_and_captions_only_the_new
     assert caption[2].endswith("caption.py") and caption[3:] == [str(d), "--only", "c7"]
 
 
+def test_search_online_runs_only_its_own_searches_and_keeps_the_rest_of_the_list(tmp_path, monkeypatch):
+    d = film(tmp_path)
+    (d / "library" / "needs.json").write_text(json.dumps([{"query": "film-wide search", "beats": [9]}]))
+    during = []
+    monkeypatch.setattr(regen, "run_step", lambda cmd, d, timeout: during.append(
+        json.loads((d / "library" / "needs.json").read_text())))
+    regen.search_online(d, ["oak beach"], web=lambda q, about: [])
+    assert during == [[{"query": "oak beach", "beats": []}]]
+    assert json.loads((d / "library" / "needs.json").read_text()) == [
+        {"query": "oak beach", "beats": []}, {"query": "film-wide search", "beats": [9]}]
+
+
 def test_search_online_with_nothing_new_does_not_caption(tmp_path, monkeypatch):
     d = film(tmp_path)
     seen = []
     monkeypatch.setattr(regen, "run_step", lambda cmd, d, timeout: seen.append(cmd))
-    assert regen.search_online(d, ["anything"]) == []
+    assert regen.search_online(d, ["anything"], web=lambda q, about: []) == []
     assert len(seen) == 1 and seen[0][2].endswith("harvest.py")
+
+
+def test_a_name_card_is_drawn_by_the_film_over_the_kept_picture_never_inside_an_illustration(tmp_path):
+    d = film(tmp_path)
+    decision = regen.Decision(action="keep", name_card="Samuel Cowell", name_role="Ted's grandfather",
+                              explanation="Kept the picture and named him.")
+    regen.apply(d, 3, decision, locate=None)
+    sb, shots = files(d)
+    beat = next(b for b in sb["beats"] if b["index"] == 3)
+    assert beat["asset"] == "assets/generated/detail_a.png"                       # the picture is kept
+    assert beat["overlay"] == {"style": "name", "text": "Samuel Cowell", "subtext": "Ted's grandfather"}
+    assert beat["owner"] and next(s for s in shots["shots"] if s["index"] == 3)["overlay"] == beat["overlay"]
+    assert "name card drawn over it as clean text: Samuel Cowell (Ted's grandfather)" in regen.look_words(
+        beat, decision, {})
+    assert "Never writing of any kind" in " ".join(regen.CHOOSE.split())
+
+
+def test_a_name_card_asked_for_the_whole_shot_holds(tmp_path):
+    d = film(tmp_path)
+    decision = regen.Decision(action="keep", name_card="Ann Rule", name_role="crime writer", name_hold=True,
+                              explanation="Kept her portrait, named for the whole shot.")
+    regen.apply(d, 3, decision, locate=None)
+    beat = next(b for b in files(d)[0]["beats"] if b["index"] == 3)
+    assert beat["overlay"] == {"style": "name", "text": "Ann Rule", "subtext": "crime writer", "hold": True}
+
+
+def test_a_card_held_for_the_whole_shot_stays_held_when_the_same_name_is_asked_for_again(tmp_path):
+    d = film(tmp_path)
+    regen.apply(d, 3, regen.Decision(action="keep", name_card="Edmund Kemper", name_hold=True, explanation="."),
+                locate=None)
+    regen.apply(d, 3, regen.Decision(action="keep", name_card="Edmund Kemper", name_role="named in IQ lists",
+                                     explanation="."), locate=None)
+    beat = next(b for b in files(d)[0]["beats"] if b["index"] == 3)
+    assert beat["overlay"]["hold"] is True and beat["overlay"]["subtext"] == "named in IQ lists"
+
+
+def test_a_review_asking_to_remove_the_card_takes_it_off_and_keeps_the_picture(tmp_path):
+    d = film(tmp_path)
+    regen.apply(d, 3, regen.Decision(action="keep", name_card="Arthur Fletcher", explanation="."), locate=None)
+    regen.apply(d, 3, regen.Decision(action="keep", remove_card=True, explanation="Took the name off."), locate=None)
+    sb, shots = files(d)
+    beat = next(b for b in sb["beats"] if b["index"] == 3)
+    assert beat["overlay"] is None and beat["asset"] == "assets/generated/detail_a.png"
+    assert next(s for s in shots["shots"] if s["index"] == 3)["overlay"] is None
+
+
+def test_keep_without_a_name_card_changes_nothing(tmp_path):
+    d = film(tmp_path)
+    before = files(d)
+    regen.apply(d, 2, regen.Decision(action="keep", explanation="Nothing better."), locate=None)
+    assert files(d) == before
+
+
+def test_a_drawing_is_never_the_first_answer_a_real_picture_is_searched_for_first(tmp_path):
+    d = film(tmp_path)
+    f = Fakes(d, 2, Decision(action="illustration", detail="a 1970s tavern doorway at night", explanation="Drew it"),
+              Decision(action="illustration", detail="a 1970s tavern doorway at night", explanation="Drew it"),
+              Decision(action="library", library_id="c9", explanation="Used c9, the tavern"), new_ids=["c9"])
+    done = f.run("show the Sandpiper Tavern")
+    assert "an illustration is not available yet" in f.asked[0][1].lower()
+    assert "a real picture must be searched for first" in f.asked[1][1]
+    assert f.searched == [["a 1970s tavern doorway at night"]]
+    assert done["state"] == "done" and review.find_beat(review.load_storyboard(d), 2)["library_id"] == "c9"
+
+
+def test_a_web_find_is_offered_and_chosen_and_credited_as_fair_use(tmp_path):
+    d = film(tmp_path)
+
+    def search(d, queries):
+        lib = json.loads((d / "library.json").read_text())
+        Image.new("RGB", (1600, 1200)).save(d / "library" / "n1.jpg", "JPEG")
+        lib["items"].append({"id": "n1", "file": "library/n1.jpg", "caption": "Liz Kloepfer in 1975.",
+                             "found_by": "news:Liz Kloepfer", "rights": "fair_use", "licence": "Copyrighted",
+                             "attribution": "example.com", "source": "web", "era": "1975"})
+        (d / "library.json").write_text(json.dumps(lib))
+        return ["n1"]
+
+    f = Fakes(d, 1, Decision(action="search", queries=["Elizabeth Kloepfer"], explanation=""),
+              Decision(action="library", library_id="n1", explanation="Used n1, her photo"))
+    f.search = search
+    assert f.run("find an actual image of Liz")["state"] == "done"
+    assert "n1 | actual | news: Liz Kloepfer | 1975 | Liz Kloepfer in 1975." in f.asked[1][1]
+    beat = review.find_beat(review.load_storyboard(d), 1)
+    assert beat["library_id"] == "n1" and beat["rights"] == "fair_use"
+    assert "n1" not in {o["id"] for o in regen.options(d, 2)}       # not a free picture,
+    assert "n1" in {o["id"] for o in regen.options(d, 2, regen.web_finds(d))}  # but offered to later regenerations
+    with pytest.raises(review.FilmError):
+        review.choose(d, 2, "n1")                                     # and never chosen by hand as a free one
+
+
+def test_search_online_gives_the_web_search_pages_to_the_harvest(tmp_path, monkeypatch):
+    d = film(tmp_path)
+    seen = []
+
+    def run_step(cmd, d, timeout):
+        if cmd[2].endswith("harvest.py"):
+            seen.append((cmd[3:], json.loads((d / "library" / "pages.json").read_text())))
+
+    monkeypatch.setattr(regen, "run_step", run_step)
+    pages = [{"page_url": "https://news.example/liz", "subject": "Liz Kloepfer"}]
+    asked = []
+    regen.search_online(d, ["Elizabeth Kloepfer"], about="Liz",
+                        web=lambda q, about: asked.append((q, about)) or pages)
+    assert asked == [(["Elizabeth Kloepfer"], "Liz")]
+    assert seen == [([str(d), "--stages", "needs,pages"], pages)]
+    assert not (d / "library" / "pages.json").exists()
+
+
+def test_a_failed_web_search_still_searches_the_archives(tmp_path, monkeypatch):
+    d = film(tmp_path)
+    seen = []
+    monkeypatch.setattr(regen, "run_step", lambda cmd, d, timeout: seen.append(cmd[3:]))
+
+    def broken(q, about):
+        raise RuntimeError("no network")
+
+    regen.search_online(d, ["oak beach"], web=broken)
+    assert seen == [[str(d), "--stages", "needs"]]
+
+
+def test_web_pages_from_stock_and_social_sites_are_dropped(monkeypatch):
+    class R:
+        output_parsed = regen.WebFinds(pages=[
+            regen.WebPage(page_url="https://www.gettyimages.com/photo/1", subject="x"),
+            regen.WebPage(page_url="https://news.example/a", image_url="https://news.example/a.jpg",
+                          subject="Liz ([news.example](https://news.example/a))"),
+            regen.WebPage(page_url="https://www.pinterest.com/pin/2", subject="y"),
+            regen.WebPage(page_url="https://wiki.example/b", image_url="not a url", subject="Ted")])
+
+    class C:
+        class responses:
+            @staticmethod
+            def parse(**kw):
+                assert kw["tools"] == [{"type": "web_search"}]
+                return R
+
+    monkeypatch.setattr(regen, "client", lambda: C)
+    assert regen.find_web_pages(["Liz Kloepfer"]) == [
+        {"page_url": "https://news.example/a", "subject": "Liz", "image_url": "https://news.example/a.jpg"},
+        {"page_url": "https://wiki.example/b", "subject": "Ted"}]
+
+
+def test_a_picture_the_review_names_by_id_is_offered_first_even_past_the_cap(tmp_path, monkeypatch):
+    d = film(tmp_path)
+    monkeypatch.setattr(regen, "MAX_OPTIONS", 1)
+    assert [o["id"] for o in regen.options(d, 1)] != ["c3"]
+    assert [o["id"] for o in regen.options(d, 1, named=["c3"])] == ["c3"]
+    f = Fakes(d, 1, Decision(action="library", library_id="c3", explanation="Used c3"))
+    assert f.run("use c3, the beach")["state"] == "done"
+    assert f.asked[0][1].split("Options (id | category | where found | era | caption):\n")[1].startswith("c3 |")
+
+
+def test_two_workers_run_two_shots_side_by_side_and_render_in_turn(tmp_path):
+    d = film(tmp_path)
+    both_running = threading.Barrier(2, timeout=10)
+    rendering, overlap = [], []
+
+    def run(d, n, text):
+        both_running.wait()                 # both shots are in flight at once, or this times out
+        with regen.RENDER_LOCK:
+            rendering.append(n)
+            overlap.append(len(rendering))
+            rendering.remove(n)
+        regen.note(d, n, state="done", step="Done")
+
+    worker = regen.Regenerator(run=run, workers=2)
+    worker.submit(d, 1, "a")
+    worker.submit(d, 2, "b")
+    assert worker.join(10)
+    assert max(overlap) == 1
+    assert {entry(d, 1)["state"], entry(d, 2)["state"]} == {"done"}
+
+
+def test_with_drawings_off_a_shot_with_no_real_picture_keeps_its_picture_and_gets_its_card(tmp_path):
+    d = film(tmp_path)
+    before = review.find_beat(review.load_storyboard(d), 2)["library_id"]
+    f = Fakes(d, 2, Decision(action="search", queries=["Sandpiper Tavern"], explanation=""),
+              Decision(action="illustration", detail="a 1960s tavern doorway at night", name_card="Seattle",
+                       name_role="1969", explanation="Drew it"))
+    regen.regenerate(d, 2, "show the tavern", ask=f.ask, check=f.check, search=f.search, render=f.render,
+                     locate=f.locate, generate=f.generate, drawings=False)
+    done = entry(d, 2)
+    beat = review.find_beat(review.load_storyboard(d), 2)
+    assert done["state"] == "done" and "drawings are off" in done["explanation"]
+    assert beat["library_id"] == before and beat["kind"] != "generated"
+    assert beat["overlay"]["text"] == "Seattle"
+    assert "Drawings are switched off" in f.asked[0][1] and "keep the current picture" in f.asked[1][1]

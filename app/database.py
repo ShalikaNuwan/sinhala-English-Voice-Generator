@@ -58,6 +58,8 @@ CREATE TABLE IF NOT EXISTS segments (
     style_json TEXT NOT NULL DEFAULT '{}',
     phrases_json TEXT NOT NULL DEFAULT '[]',
     lines_json TEXT NOT NULL DEFAULT '[]',
+    sentence_fix_json TEXT NOT NULL DEFAULT '{}',
+    facts_json TEXT NOT NULL DEFAULT '{}',
     tts_audio_path TEXT,
     tts_duration_ms INTEGER,
     qa_json TEXT NOT NULL DEFAULT '{}',
@@ -94,6 +96,8 @@ ADDED_COLUMNS = [
     ("segments", "kind", "TEXT NOT NULL DEFAULT 'narration'"),
     ("segments", "phrases_json", "TEXT NOT NULL DEFAULT '[]'"),
     ("segments", "lines_json", "TEXT NOT NULL DEFAULT '[]'"),
+    ("segments", "sentence_fix_json", "TEXT NOT NULL DEFAULT '{}'"),
+    ("segments", "facts_json", "TEXT NOT NULL DEFAULT '{}'"),
 ]
 
 

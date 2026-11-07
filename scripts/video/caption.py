@@ -160,7 +160,7 @@ def main() -> None:
         print("nothing to caption")
         return
 
-    client = OpenAI(api_key=settings.openai_api_key)
+    client = OpenAI(api_key=settings.openai_api_key, max_retries=10)  # shares the rate limit with regenerations
     model = choose_model(client, args.model, root / todo[0]["file"])
     print(f"captioning {len(todo)} of {len(items)} with {model}", flush=True)
     lock = threading.Lock()

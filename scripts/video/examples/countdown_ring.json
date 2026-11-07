@@ -1,0 +1,130 @@
+{
+ "start": 2686.42,
+ "end": 2699.48,
+ "smooth": 0.6,
+ "base": {
+  "kind": "plan",
+  "rooms": [
+   {
+    "box": [
+     8,
+     12,
+     52,
+     46
+    ],
+    "outer": true,
+    "name": "Karen's basement room"
+   }
+  ],
+  "notes": [
+   {
+    "pt": [
+     8,
+     48
+    ],
+    "text": "DIAGRAM  \u00b7  LAYOUT SIMPLIFIED",
+    "size": 0.7
+   }
+  ]
+ },
+ "elements": [
+  {
+   "kind": "icon",
+   "icon": "bed",
+   "pt": [
+    24,
+    30
+   ],
+   "size": 10
+  },
+  {
+   "kind": "icon",
+   "icon": "door",
+   "pt": [
+    49,
+    41
+   ],
+   "size": 4
+  },
+  {
+   "kind": "icon",
+   "icon": "stairs",
+   "pt": [
+    58,
+    41
+   ],
+   "size": 5
+  },
+  {
+   "kind": "tag",
+   "text": "ROOMMATE",
+   "sub": "thought she was still sleeping",
+   "pt": [
+    58,
+    41
+   ],
+   "at": 5.7,
+   "offset": [
+    3,
+    -8
+   ],
+   "scale": 1.5
+  },
+  {
+   "kind": "tag",
+   "text": "HE CHECKED ON HER",
+   "sub": "and found her unconscious, gravely injured",
+   "pt": [
+    24,
+    30
+   ],
+   "at": 10.2,
+   "offset": [
+    2,
+    -11
+   ],
+   "scale": 1.5,
+   "accent": true
+  }
+ ],
+ "camera": [
+  [
+   0.0,
+   0.47,
+   0.5,
+   1.0
+  ],
+  [
+   13.1,
+   0.47,
+   0.5,
+   1.08
+  ]
+ ],
+ "hud": [
+  {
+   "kind": "stamp",
+   "text": "January 4, 1974",
+   "sub": "Seattle",
+   "at": 0.2
+  },
+  {
+   "kind": "counter",
+   "start": 0,
+   "end": 20,
+   "move_from": 2.2,
+   "move_to": 9.0,
+   "at": 1.6,
+   "unit": "HOURS",
+   "ring_of": 24,
+   "x": 0.835,
+   "y": 0.47,
+   "size": 0.17
+  },
+  {
+   "kind": "note",
+   "text": "Diagram: layout simplified",
+   "at": 0.3
+  }
+ ]
+}

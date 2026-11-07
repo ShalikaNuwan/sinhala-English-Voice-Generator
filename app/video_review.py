@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import subprocess
 import sys
 import threading
@@ -32,13 +33,13 @@ VIDEO_SCRIPTS = ROOT / "scripts" / "video"
 VIDEO_FFMPEG = "/opt/miniconda3/envs/video/bin/ffmpeg"
 
 CATEGORIES = ("actual", "stand-in", "illustration", "graphic", "missing")
-GRAPHIC_KINDS = {"card", "keyfact", "map", "board", "chart"}
+GRAPHIC_KINDS = {"card", "keyfact", "map", "board", "reveal", "explainer", "callback", "chart"}
 DEVICE_KINDS = {"profile", "exhibit", "highlight"}
 # Found by the case's own searches: pictures of the case itself. Wikipedia and named-entity pictures are real
 # photos of a place or thing, often from another year or of another of its kind, so on their own they stand in.
 ACTUAL_SOURCES = {"case", "news"}
 KIND_WORDS = {"generated": "illustration", "card": "name card", "keyfact": "key-fact label", "map": "map",
-              "board": "evidence board", "chart": "chart", "profile": "profile card",
+              "board": "evidence board", "reveal": "evidence board reveal", "explainer": "explainer animation", "callback": "evidence board callback", "chart": "chart", "profile": "profile card",
               "exhibit": "document close-up", "highlight": "document highlight"}
 MAX_OPTIONS = 12
 REGEN_KEYS = ("review", "state", "step", "explanation", "check", "clip", "error", "at")
@@ -70,11 +71,12 @@ def engine():
     return storyboard
 
 
-def film_dir(root: Path, film: str) -> Path:
+def film_dir(root: Path, film: str, preparing: bool = False) -> Path:
+    """The film's folder. With `preparing`, a film still being prepared (pipeline.json, no storyboard yet) counts."""
     if not film or film.startswith(".") or "/" in film or "\\" in film:
         raise FilmError("no such film")
     d = Path(root) / film
-    if not (d / "storyboard.json").exists():
+    if not (d / "storyboard.json").exists() and not (preparing and (d / "pipeline.json").exists()):
         raise FilmError("no such film")
     return d
 
@@ -219,7 +221,7 @@ def final_film(d: Path) -> str | None:
         if (d / name).exists():
             return name
     # A film rendered with its own --out name (gacy_documentary_v2_1080p.mp4); samples are not the film.
-    named = sorted((p for p in d.glob("*_1080p.mp4") if not p.name.startswith("sample")),
+    named = sorted((p for p in [*d.glob("*_1080p.mp4"), *d.glob("*_720p.mp4")] if not p.name.startswith("sample")),
                    key=lambda p: p.stat().st_mtime)
     return named[-1].name if named else None
 
@@ -291,18 +293,140 @@ def approve_unreviewed(d: Path) -> int:
 
 
 def list_films(root: Path) -> list[dict]:
+    """Every film with a storyboard, and every film still being prepared (its pictures and clips can be watched)."""
     root = Path(root)
     if not root.exists():
         return []
     out = []
-    for d in sorted(p for p in root.iterdir() if (p / "storyboard.json").exists()):
+    for d in sorted(p for p in root.iterdir() if (p / "storyboard.json").exists() or (p / "pipeline.json").exists()):
+        running = next((s["stage"] for s in stages(d) if s["state"] == "running"), None)
+        if not (d / "storyboard.json").exists():
+            out.append({"film": d.name, "shots": 0, "minutes": 0, "reviewed": 0, "not_ok": 0, "animatic": False,
+                        "final": None, "preparing": running})
+            continue
         sb = load_storyboard(d)
         marks = load_marks(d)
         mk = [current_mark(marks, b) for b in sb["beats"]]
         out.append({"film": d.name, "shots": len(sb["beats"]), "minutes": round(sb.get("duration_s", 0) / 60, 1),
                     "reviewed": sum(1 for m in mk if m), "not_ok": sum(1 for m in mk if m and m["status"] == "not_ok"),
-                    "animatic": (d / "animatic.mp4").exists(), "final": final_film(d)})
+                    "animatic": (d / "animatic.mp4").exists(), "final": final_film(d), "preparing": running})
     return out
+
+
+# ---------- what the engine has gathered (watched while a film is prepared) ----------
+
+IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".tif", ".tiff"}
+
+
+def last_line(log: Path) -> str:
+    """The log's last line that is not a command, read from its tail only (logs grow long)."""
+    with log.open("rb") as f:
+        f.seek(max(0, log.stat().st_size - 4096))
+        lines = f.read().decode("utf-8", "replace").splitlines()
+    return next((x.strip() for x in reversed(lines) if x.strip() and not x.startswith("$")), "")
+
+
+def stages(d: Path) -> list[dict]:
+    """The engine's preparation stages for this film: done, running (its log was written after the last stage
+    finished) or waiting. A stage that stopped with an error stays "running" with its log's last line and age."""
+    path = d / "pipeline.json"
+    if not path.exists():
+        return []
+    engine()
+    import documentary
+    done = set(json.loads(path.read_text(encoding="utf-8")).get("done") or [])
+    since = path.stat().st_mtime
+    out, current = [], None
+    for name in documentary.PREPARE:
+        log = d / "logs" / f"{name}.log"
+        state = "done" if name in done else "waiting"
+        if state == "waiting" and current is None and log.exists() and log.stat().st_mtime >= since:
+            state = current = "running"
+        row = {"stage": name, "state": state}
+        if state == "running":
+            row |= {"last": last_line(log), "age_s": round(time.time() - log.stat().st_mtime)}
+        out.append(row)
+    return out
+
+
+def preparing(d: Path) -> bool:
+    """Whether documentary.py prepare is running on this film now. Its later stages plan the shots afresh,
+    so a picture chosen or regenerated meanwhile would be overwritten."""
+    pattern = rf"documentary\.py prepare ([^ ]*/)?{re.escape(d.name)}(/| |$)"
+    return subprocess.run(["pgrep", "-f", pattern], capture_output=True).returncode == 0
+
+
+def replanning(d: Path) -> bool:
+    """Whether the preparation may still change the shots: it is running and not yet at its last stage. The
+    review stage only draws the storyboard page, the review cut and the critic's notes from the settled shots,
+    so the owner may change shots while it runs (the review cut then marks those shots as changed)."""
+    if not preparing(d):
+        return False
+    return next((s["stage"] for s in stages(d) if s["state"] == "running"), None) != "review"
+
+
+def gathered(d: Path) -> dict:
+    """Every picture and clip the engine has gathered for the film, newest first, with how many shots use each.
+    Pictures are library.json's, plus files that reached library/ since it was last written (a harvest in
+    progress); files older than it and not in it were dropped by the harvest (duplicates, too small)."""
+    used: dict[str, int] = {}
+    if (d / "storyboard.json").exists():
+        for b in load_storyboard(d)["beats"]:
+            for key in {b.get("library_id"), b.get("subject_id")} - {None}:
+                used[key] = used.get(key, 0) + 1
+    lib_path = d / "library.json"
+    items = json.loads(lib_path.read_text(encoding="utf-8"))["items"] if lib_path.exists() else []
+    written = lib_path.stat().st_mtime if lib_path.exists() else 0.0
+    pictures, known = [], set()
+    for item in items:
+        f = d / item.get("file", "")
+        known.add(f.name)
+        pictures.append({"id": item["id"], "file": item.get("file"), "caption": item.get("caption") or item.get("title") or "",
+                         "found": found_words(item), "licence": item.get("licence") or "", "rights": item.get("rights") or "",
+                         "source_url": item.get("source_url") or "", "era": item.get("era") or "",
+                         "graphic": bool(item.get("graphic")), "used": used.get(item["id"], 0),
+                         "added": f.stat().st_mtime if f.exists() else written, "new": False})
+    folder = d / "library"
+    if folder.is_dir():
+        for f in folder.iterdir():
+            if f.suffix.lower() in IMAGE_SUFFIXES and f.name not in known and f.stat().st_mtime > written:
+                pictures.append({"id": f.stem, "file": f"library/{f.name}", "caption": "", "found": "", "licence": "",
+                                 "rights": "", "source_url": "", "era": "", "graphic": False, "used": 0,
+                                 "added": f.stat().st_mtime, "new": True})
+    clips_path = d / "clips.json"
+    clips = []
+    for item in json.loads(clips_path.read_text(encoding="utf-8"))["items"] if clips_path.exists() else []:
+        f = d / item.get("file", "")
+        for k, seg in enumerate(item.get("segments") or []):
+            cid = f"{item['id']}#{k}"
+            clips.append({"id": cid, "file": item.get("file"), "in": seg.get("in", 0.0), "out": seg.get("out", 0.0),
+                          "caption": seg.get("caption") or "", "title": item.get("title") or "",
+                          "licence": item.get("licence") or "", "rights": item.get("rights") or "",
+                          "source_url": item.get("source_url") or "", "era": seg.get("era") or "",
+                          "graphic": bool(seg.get("graphic")), "used": used.get(cid, 0),
+                          "added": f.stat().st_mtime if f.exists() else 0.0})
+    # The AI pictures (ladder.generate_detail): the untagged originals, or the tagged copies a film shows.
+    engine()
+    import ladder
+    gen = d / "assets" / "generated"
+    folder = gen if ladder.tags_illustrations(d) else gen / "untagged"
+    drawn_for: dict[str, list[str]] = {}
+    if (d / "storyboard.json").exists():
+        for b in load_storyboard(d)["beats"]:
+            if b.get("kind") == "generated" and b.get("asset"):
+                drawn_for.setdefault(b["asset"], []).append(b.get("detail") or "")
+    illustrations = []
+    for f in folder.glob("*.png") if folder.is_dir() else []:
+        rel = f.relative_to(d).as_posix()
+        details = drawn_for.get(rel, [])
+        illustrations.append({"id": f.stem, "file": rel, "caption": next((x for x in details if x), ""),
+                              "found": "AI picture", "licence": "", "rights": "generated", "source_url": "",
+                              "era": "", "graphic": False, "used": len(details), "added": f.stat().st_mtime,
+                              "new": False})
+    newest = lambda x: -x["added"]
+    return {"film": d.name, "stages": stages(d), "storyboard": (d / "storyboard.json").exists(),
+            "pictures": sorted(pictures, key=newest), "clips": sorted(clips, key=newest),
+            "illustrations": sorted(illustrations, key=newest)}
 
 
 def illustration_allowed(sb: dict, beat: dict) -> tuple[bool, str]:
@@ -337,10 +461,13 @@ def alternatives(d: Path, n: int) -> dict:
                         "category": picture_category(item)})
         if len(options) >= MAX_OPTIONS:
             break
-    return {"shot": n, "options": options, "illustration": {"allowed": True, "why": ""}}
+    import ladder
+    return {"shot": n, "options": options, "illustration": {"allowed": True, "why": "", "tagged": ladder.tags_illustrations(d)}}
 
 
-def choose(d: Path, n: int, choice: str, describe=None, generate=None) -> dict:
+def choose(d: Path, n: int, choice: str, describe=None, generate=None, fair_use: frozenset = frozenset()) -> dict:
+    """Put a library picture (or a new illustration) on shot n. Only free pictures can be chosen, except the
+    ids in `fair_use`: copyrighted pictures a regeneration's web search just found for this shot."""
     storyboard = engine()
     sb = load_storyboard(d)
     beat = find_beat(sb, n)
@@ -370,7 +497,7 @@ def choose(d: Path, n: int, choice: str, describe=None, generate=None) -> dict:
                          "licence": "Generated for this film (illustration)", "attribution": "Illustration",
                          "link": "generated", "effects": [], "crop": None})
     else:
-        library = load_library(d, free_only=True)
+        library = load_library(d, free_only=choice not in fair_use)
         item = library.get(choice)
         if not item or not storyboard.usable(item):
             raise FilmError("that picture is not available")

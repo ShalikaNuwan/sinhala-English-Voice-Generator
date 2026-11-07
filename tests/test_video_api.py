@@ -46,6 +46,30 @@ def test_films_and_film_view(tmp_path, monkeypatch):
     assert client.get("/api/video/films/demo/job").json() == {"state": "none"}
 
 
+def test_gathered_pictures_and_clips(tmp_path, monkeypatch):
+    client, api = client_for(tmp_path, monkeypatch)
+    make_film(tmp_path / "data" / "video")
+    g = client.get("/api/video/films/demo/gathered").json()
+    assert len(g["pictures"]) == 4 and len(g["clips"]) == 2 and g["storyboard"]
+    assert client.get("/api/video/films/nope/gathered").status_code == 404
+
+
+def test_shots_cannot_be_changed_while_the_film_is_being_prepared(tmp_path, monkeypatch):
+    client, api = client_for(tmp_path, monkeypatch)
+    make_film(tmp_path / "data" / "video")
+    monkeypatch.setattr(api.review, "preparing", lambda d: True)
+    monkeypatch.setattr(api.review, "stages", lambda d: [{"stage": "keyfacts", "state": "running"}])
+    assert client.post("/api/video/films/demo/shots/2/choose", json={"choice": "c3"}).status_code == 409
+    r = client.post("/api/video/films/demo/shots/2/regenerate", json={"review": "show the house"})
+    assert r.status_code == 409 and "preparing" in r.json()["detail"]
+    assert client.post("/api/video/films/demo/rebuild").status_code == 409
+    assert client.put("/api/video/films/demo/shots/2/mark", json={"status": "ok"}).status_code == 200
+    # At the review cut the shots are settled: they may change, but the cut being drawn is not rebuilt meanwhile.
+    monkeypatch.setattr(api.review, "stages", lambda d: [{"stage": "review", "state": "running"}])
+    assert client.post("/api/video/films/demo/shots/2/choose", json={"choice": "c3"}).status_code == 200
+    assert client.post("/api/video/films/demo/rebuild").status_code == 409
+
+
 def test_no_video_folder_lists_no_films(tmp_path, monkeypatch):
     client, api = client_for(tmp_path, monkeypatch)
     assert client.get("/api/video/films").json() == {"films": []}

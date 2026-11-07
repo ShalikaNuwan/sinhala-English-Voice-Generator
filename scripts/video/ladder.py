@@ -17,6 +17,7 @@ A step that cannot be carried out falls to the next one (reframe -> hold -> gene
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from pathlib import Path
 
@@ -110,7 +111,10 @@ def can_hold(entries: list[dict], at: int) -> bool:
 GENERIC = {"the", "house", "home", "street", "avenue", "road", "west", "east", "north", "south", "county", "city",
            "high", "school", "police", "department", "station", "jail", "court", "courthouse", "church", "hospital",
            "pharmacy", "store", "shop", "restaurant", "office", "company", "garage", "park", "river", "lake", "college",
-           "university", "prison", "penitentiary", "building", "center", "centre", "hotel", "bar", "club", "farm"}
+           "university", "prison", "penitentiary", "building", "center", "centre", "hotel", "bar", "club", "farm",
+           # ordinary words that are also parts of this kind of story's names ("Ray Crew", "Jim Bell", "Coal Creek
+           # Canyon", "Taylor Mountain"): an X-ray or a canyon is still drawable; the name's other word still counts
+           "ray", "bell", "canyon", "creek", "hill", "mountain", "dawn", "rose", "young", "pass", "summit"}
 
 
 def safe_detail(detail: str, bible: dict) -> bool:
@@ -145,18 +149,41 @@ def tag_illustration(source: Path, path: Path | None = None) -> None:
     img.save(path or source)
 
 
+def tags_illustrations(video_dir: Path) -> bool:
+    """Whether this film marks its drawn pictures ILLUSTRATION: yes unless case.json says "illustration_tag": false."""
+    path = Path(video_dir) / "case.json"
+    return not path.exists() or json.loads(path.read_text(encoding="utf-8")).get("illustration_tag", True) is not False
+
+
+def drawing_prompt(detail: str, era: str) -> str:
+    """The prompt for a drawn detail. A story time such as "After Ted's imprisonment" or "1974, Salt Lake City"
+    beside "photograph" reads as a named likeness to sources' guard, so then only its year or decade is kept."""
+    import sources
+
+    def prompt(period: str) -> str:
+        return (f"Documentary photograph, {period + ', ' if period else ''}a quiet close detail: {detail}. "
+                "Real-world, period-accurate, 35 mm film grain, muted natural colour, soft available light, well "
+                "exposed with the subject clearly visible and detail held in the shadows. No people, no faces, no "
+                "hands, no text, no signs, no logos, no brand names, nothing gruesome.")
+
+    full = prompt(era or "1970s")
+    if not sources.names_a_real_person(full):
+        return full
+    dated = re.search(r"\b(?:1[89]|20)\d0s\b|\b(?:1[89]|20)\d\d\b", era or "")
+    return prompt(dated.group() if dated else "")
+
+
 def generate_detail(detail: str, era: str, video_dir: Path) -> Path:
     import sources
-    prompt = (f"Documentary photograph, {era or '1970s'}, a quiet close detail: {detail}. Real-world, period-accurate, "
-              "35 mm film grain, muted natural colour, soft available light, well exposed with the subject clearly "
-              "visible and detail held in the shadows. No people, no faces, no hands, no text, no signs, no logos, "
-              "no brand names, nothing gruesome.")
+    prompt = drawing_prompt(detail, era)
     name = f"detail_{hashlib.sha1(prompt.encode()).hexdigest()[:10]}"
     folder = video_dir / "assets" / "generated"
     out, raw = folder / f"{name}.png", folder / "untagged" / f"{name}.png"
     if not raw.exists():
         # The untagged image is kept, so a change to the tag redraws it without paying for the image again.
         sources.generate_image(prompt, raw)
+    if not tags_illustrations(video_dir):
+        return raw
     if not out.exists() or out.stat().st_mtime < raw.stat().st_mtime:
         tag_illustration(raw, out)
     return out

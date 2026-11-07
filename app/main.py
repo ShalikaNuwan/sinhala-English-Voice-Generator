@@ -8,11 +8,12 @@ from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from . import fact_check
 from .audio import AudioError, AudioService
 from .config import Settings, settings
 from .database import Database, utc_now
-from .pipeline import Pipeline
-from .schemas import KindUpdate, ProcessRequest, ProjectCreate, RegenerateRequest, TextUpdate
+from .pipeline import Pipeline, TaskBusy
+from .schemas import FactResolve, KindUpdate, ProcessRequest, ProjectCreate, RegenerateRequest, TextUpdate
 from .video_api import router as video_router
 
 
@@ -76,10 +77,27 @@ def media_url(path: str | None) -> str | None:
 
 
 def present_segment(segment: dict) -> dict:
+    facts = segment.get("facts") or {}
     return segment | {
         "source_audio_url": media_url(segment.get("source_audio_path")),
         "tts_audio_url": media_url(segment.get("tts_audio_path")),
+        "sentence_fix": segment.get("sentence_fix") or {},
+        "facts": facts,
+        # The check read different words than the segment holds now.
+        "facts_stale": bool(facts.get("checked_text")) and facts["checked_text"] != segment.get("narration_en"),
     }
+
+
+def require_idle_job(job_id: str) -> dict:
+    """A job whose English is written: a whole-job check must not run while the pipeline still writes it."""
+    job = db.one("SELECT * FROM jobs WHERE id=?", (job_id,))
+    if not job:
+        raise HTTPException(404, "Job not found")
+    if job["status"] in ("queued", "running"):
+        raise HTTPException(409, "This job is still processing")
+    if not settings.openai_api_key:
+        raise HTTPException(503, "OPENAI_API_KEY is not configured")
+    return job
 
 
 @app.get("/", include_in_schema=False)
@@ -188,6 +206,116 @@ def list_segments(job_id: str) -> list[dict]:
     if not db.one("SELECT id FROM jobs WHERE id=?", (job_id,)):
         raise HTTPException(404, "Job not found")
     return [present_segment(s) for s in db.all("SELECT * FROM segments WHERE job_id=? ORDER BY segment_index", (job_id,))]
+
+
+def outline_segment(segment: dict, query: str = "", text: bool = False) -> dict:
+    """What the page needs of every segment besides the one it shows: its place, status and fact counts;
+    with text, also what it says (the English, or the Sinhala of a kept recording) for the all-segments view."""
+    facts = segment.get("facts") or {}
+    row = {
+        "id": segment["id"],
+        "segment_index": segment["segment_index"],
+        "kind": segment["kind"],
+        "status": segment["status"],
+        "qa_status": segment["qa_status"],
+        "facts": {"state": facts.get("state"), "at": facts.get("at"),
+                  "items": [{"verdict": item.get("verdict"), "resolved": bool(item.get("resolved"))}
+                            for item in facts.get("items") or []]},
+        "facts_stale": present_segment(segment)["facts_stale"],
+    }
+    if query:
+        row["snippet"] = snippet(segment, query)
+    if text:
+        row.update(start_ms=segment["start_ms"], end_ms=segment["end_ms"], narration_en=segment["narration_en"])
+        if segment["kind"] == "original":
+            row["transcript_si"] = segment["transcript_si"]
+    return row
+
+
+def snippet(segment: dict, query: str, width: int = 70) -> str:
+    """The words around the first place the query appears in the segment's English or Sinhala."""
+    for text in (segment.get("narration_en"), segment.get("faithful_en"), segment.get("transcript_si")):
+        at = (text or "").lower().find(query)
+        if at >= 0:
+            start, end = max(0, at - width), min(len(text), at + len(query) + width)
+            return ("…" if start else "") + text[start:end].strip() + ("…" if end < len(text) else "")
+    return ""
+
+
+@app.get("/api/jobs/{job_id}/segment-outline")
+def segment_outline(job_id: str, q: str = "", text: bool = False) -> list[dict]:
+    """Every segment in a few fields, so a long job is never sent whole; with q, only the segments whose
+    English or Sinhala contains q (case ignored), each with the words around it; with text, what each says."""
+    if not db.one("SELECT id FROM jobs WHERE id=?", (job_id,)):
+        raise HTTPException(404, "Job not found")
+    query = q.strip().lower()
+    segments = db.all("SELECT * FROM segments WHERE job_id=? ORDER BY segment_index", (job_id,))
+    if query:
+        segments = [s for s in segments if any(query in (s.get(column) or "").lower()
+                                               for column in ("narration_en", "faithful_en", "transcript_si"))]
+    return [outline_segment(segment, query, text) for segment in segments]
+
+
+@app.get("/api/segments/{segment_id}")
+def get_segment(segment_id: str) -> dict:
+    return present_segment(require_segment(segment_id))
+
+
+@app.get("/api/jobs/{job_id}/tasks")
+def job_tasks(job_id: str) -> dict:
+    """Progress of the sentence fix and the fact check; held in memory, so a restart forgets it."""
+    if not db.one("SELECT id FROM jobs WHERE id=?", (job_id,)):
+        raise HTTPException(404, "Job not found")
+    return pipeline.task_status(job_id)
+
+
+@app.post("/api/jobs/{job_id}/fix-sentences", status_code=202)
+def fix_sentences(job_id: str) -> dict:
+    """Mend the sentences that segment cuts split, in the English only."""
+    require_idle_job(job_id)
+    try:
+        pipeline.start_fix_sentences(job_id)
+    except TaskBusy as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return {"job_id": job_id, "task": "sentences", "state": "running"}
+
+
+@app.post("/api/jobs/{job_id}/check-facts", status_code=202)
+def check_job_facts(job_id: str) -> dict:
+    """Check the facts of every narration segment on the web."""
+    require_idle_job(job_id)
+    try:
+        pipeline.start_check_facts(job_id)
+    except TaskBusy as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return {"job_id": job_id, "task": "facts", "state": "running"}
+
+
+@app.post("/api/segments/{segment_id}/check-facts", status_code=202)
+def check_segment_facts(segment_id: str) -> dict:
+    """Check the facts of one narration segment again."""
+    segment = require_segment(segment_id)
+    require_idle_job(segment["job_id"])
+    if segment.get("kind") != "narration":
+        raise HTTPException(409, "Only narration segments are fact checked")
+    try:
+        pipeline.start_check_facts(segment["job_id"], segment_id)
+    except TaskBusy as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return {"job_id": segment["job_id"], "segment_id": segment_id, "task": "facts", "state": "running"}
+
+
+@app.put("/api/segments/{segment_id}/facts/{index}/resolved")
+def resolve_fact(segment_id: str, index: int, payload: FactResolve) -> dict:
+    """The user marks a wrong or unverified fact as resolved (or not). Nothing in the text changes."""
+    segment = require_segment(segment_id)
+    try:
+        fact_check.set_resolved(db, segment_id, index, payload.claim, payload.resolved)
+    except LookupError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return present_segment(require_segment(segment["id"]))
 
 
 @app.patch("/api/segments/{segment_id}/transcript")
